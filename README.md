@@ -65,9 +65,11 @@ it.
    there needs no `--project`), keeps memprove's own files out of your
    Evidence through `.git/info/exclude`, writes the Claude Code hook and MCP
    entry (`.claude/settings.local.json`, `.mcp.json`), the Codex server
-   entry (`~/.codex/config.toml`) with a short note in `AGENTS.md`, the
-   Cursor entry (`.cursor/mcp.json`) with a rule, for whichever clients it
-   detects (`--client` names them), and ends with `memprove doctor`.
+   entry (`~/.codex/config.toml`) and hook (`.codex/hooks.json`) with a
+   short note in `AGENTS.md`, the Cursor entry and hook (`.cursor/mcp.json`,
+   `.cursor/hooks.json`) with a rule, for whichever clients it detects
+   (`--client` names them), and ends with `memprove doctor`. Codex runs its
+   hook once you approve it in `/hooks`.
    Running it again changes nothing. No token is shown or written into the
    repository.
 
@@ -101,9 +103,9 @@ a file the test run creates, such as a first `Cargo.lock`).
 `resume --pack` prints the Context Pack: the Task's verdict, the Sessions,
 the last passed run, what can be done next, every active statement with its
 verdict and the commit it is bound to, and what to run again. `end` ends
-the Session. In Claude Code the hook injects the Pack at the start of every
-session, and the MCP tools do what the commands do, except running
-commands: tests are always recorded with `memprove run`.
+the Session. In Claude Code, Codex and Cursor the hook injects the Pack at
+the start of every session, and the MCP tools do what the commands do,
+except running commands: tests are always recorded with `memprove run`.
 
 `memprove --help` lists every command; `docs/guide.md` is the agent's
 manual, from install to takeover.

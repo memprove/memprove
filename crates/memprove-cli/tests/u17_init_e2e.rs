@@ -229,11 +229,61 @@ fn u17_init_enables_a_repository_for_every_client_and_is_idempotent() {
     for entry in [
         ".claude/settings.local.json",
         ".mcp.json",
+        ".codex/hooks.json",
         ".cursor/mcp.json",
         ".cursor/rules/memprove.mdc",
+        ".cursor/hooks.json",
     ] {
         assert_eq!(exclude.matches(entry).count(), 1, "{exclude}");
     }
+    // U24 (H1, H2): the session-start hooks of Codex and Cursor, both the
+    // shell command of this executable with the configuration directory;
+    // Codex's comes with the note on trusting it.
+    let config_dir = install.prefix.join("config");
+    let codex_hooks = parse_strict(&read(&repo.join(".codex/hooks.json"))).unwrap();
+    let codex_handler = &codex_hooks
+        .get("hooks")
+        .and_then(|hooks| hooks.get("SessionStart"))
+        .and_then(JsonValue::as_array)
+        .unwrap()[0]
+        .get("hooks")
+        .and_then(JsonValue::as_array)
+        .unwrap()[0];
+    let codex_command = codex_handler
+        .get("command")
+        .and_then(JsonValue::as_str)
+        .unwrap();
+    assert!(
+        codex_command.ends_with(&format!(
+            "/memprove' hook session-start --config-dir '{}'",
+            config_dir.display()
+        )),
+        "{codex_command}"
+    );
+    assert!(
+        second.contains("note: Codex runs this hook only after you trust it"),
+        "{second}"
+    );
+    let cursor_hooks = parse_strict(&read(&repo.join(".cursor/hooks.json"))).unwrap();
+    assert_eq!(
+        cursor_hooks.get("version"),
+        Some(&JsonValue::Number("1".to_owned()))
+    );
+    let cursor_command = cursor_hooks
+        .get("hooks")
+        .and_then(|hooks| hooks.get("sessionStart"))
+        .and_then(JsonValue::as_array)
+        .unwrap()[0]
+        .get("command")
+        .and_then(JsonValue::as_str)
+        .unwrap();
+    assert!(
+        cursor_command.ends_with(&format!(
+            "/memprove' hook session-start --client cursor --config-dir '{}'",
+            config_dir.display()
+        )),
+        "{cursor_command}"
+    );
     let codex = read(&install.home.join(".codex/config.toml"));
     assert!(codex.starts_with("[mcp_servers.memprove]\n"), "{codex}");
     assert!(codex.contains("\"--config-dir\""), "{codex}");
@@ -268,8 +318,10 @@ fn u17_init_enables_a_repository_for_every_client_and_is_idempotent() {
     for path in [
         ".claude/settings.local.json",
         ".mcp.json",
+        ".codex/hooks.json",
         ".cursor/mcp.json",
         ".cursor/rules/memprove.mdc",
+        ".cursor/hooks.json",
         "AGENTS.md",
         ".git/info/exclude",
     ] {
@@ -298,8 +350,9 @@ fn u17_init_enables_a_repository_for_every_client_and_is_idempotent() {
         "{third}"
     );
     assert!(!third.contains(" written"), "{third}");
-    assert_eq!(third.matches("already as asked").count(), 7, "{third}");
+    assert_eq!(third.matches("already as asked").count(), 9, "{third}");
     assert!(!third.contains("note: AGENTS.md"), "{third}");
+    assert!(!third.contains("note: Codex runs this hook"), "{third}");
     assert_eq!(read(&repo.join("AGENTS.md")), agents);
     assert_eq!(read(&install.home.join(".codex/config.toml")), codex);
 

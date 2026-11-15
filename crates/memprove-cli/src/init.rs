@@ -3,9 +3,10 @@
 //! the operator's token, keeps memprove's files out of Evidence
 //! (`.git/info/exclude`), writes the `SessionStart` hook and the MCP server
 //! entry for Claude Code, the MCP server entry for Codex
-//! (`~/.codex/config.toml`) and Cursor (`.cursor/mcp.json`), a short note
-//! for the clients that have no `SessionStart` hook (AGENTS.md,
-//! `.cursor/rules/memprove.mdc`), and runs `doctor`. Which clients it
+//! (`~/.codex/config.toml`) and Cursor (`.cursor/mcp.json`), U24 (H1, H2):
+//! their session-start hooks (`.codex/hooks.json`, `.cursor/hooks.json`), a
+//! short note for the agent that reads no Pack at the start of its session
+//! (AGENTS.md, `.cursor/rules/memprove.mdc`), and runs `doctor`. Which clients it
 //! writes for is detected from the home directory and `PATH`, or given with
 //! `--client`. The operator's and the agent's tokens stay hidden: the
 //! operator's is read from the installation, the agent's was written by
@@ -28,9 +29,11 @@ use std::{
 pub enum Client {
     /// Claude Code: the `SessionStart` hook, `.mcp.json`, and the allow rules.
     ClaudeCode,
-    /// Codex: `~/.codex/config.toml` and a note in AGENTS.md.
+    /// Codex: `~/.codex/config.toml`, U24 (H1) the hook in
+    /// `.codex/hooks.json`, and a note in AGENTS.md.
     Codex,
-    /// Cursor: `.cursor/mcp.json` and `.cursor/rules/memprove.mdc`.
+    /// Cursor: `.cursor/mcp.json`, U24 (H2) the hook in `.cursor/hooks.json`,
+    /// and `.cursor/rules/memprove.mdc`.
     Cursor,
 }
 
@@ -110,14 +113,19 @@ pub fn codex_home_dir(home: Option<&Path>, codex_home: Option<&OsStr>) -> Option
 
 /// The entries `init` adds to `.git/info/exclude`: the files it writes
 /// inside the Workspace, which must not become untracked files (an untracked
-/// file keeps a run's Evidence from being `verified`). The Cursor files are
-/// added when Cursor is among `clients`.
+/// file keeps a run's Evidence from being `verified`). The Codex hooks file
+/// (U24 H1) is added when Codex is among `clients`, the Cursor files when
+/// Cursor is.
 #[must_use]
 pub fn exclude_entries(clients: &[Client]) -> Vec<&'static str> {
     let mut entries = vec![".claude/settings.local.json", ".mcp.json"];
+    if clients.contains(&Client::Codex) {
+        entries.push(crate::hook::CODEX_HOOKS_FILE);
+    }
     if clients.contains(&Client::Cursor) {
         entries.push(".cursor/mcp.json");
         entries.push(".cursor/rules/memprove.mdc");
+        entries.push(crate::hook::CURSOR_HOOKS_FILE);
     }
     entries
 }
@@ -159,10 +167,19 @@ pub const NOTE_END: &str = "<!-- memprove:end -->";
 pub const AGENTS_COMMIT_NOTE: &str = "AGENTS.md is content of the repository: commit it, since \
                                       an untracked file keeps a run's Evidence from being verified";
 
-/// The note for a client that has no `SessionStart` hook (AGENTS.md for
-/// Codex, a Cursor rule): one sentence, under five lines in all with its
-/// markers, that tells the agent to read the Context Pack through the MCP
-/// tool `pack` first.
+/// U24 (H1): what `init` says after writing `.codex/hooks.json`: Codex
+/// runs a project's hooks only in a project it trusts, and a new or changed
+/// hook only after the user trusted it; `init` does not trust it for them.
+pub const CODEX_TRUST_NOTE: &str = "Codex runs this hook only after you trust it: start Codex \
+                                    in this repository, trust the project, and approve the \
+                                    memprove hook in /hooks; until then the note in AGENTS.md \
+                                    tells the agent to read the Pack through the MCP tool pack";
+
+/// The note for an agent whose session started without a Pack (AGENTS.md
+/// for Codex, a Cursor rule; U24: a hook Codex has not been allowed to run,
+/// or Cursor's Agents Window, which drops a `sessionStart` hook's context):
+/// one sentence, under five lines in all with its markers, that tells the
+/// agent to read the Context Pack through the MCP tool `pack` first.
 pub const NOTE: &str = "memprove keeps this repository's task ledger. Before changing anything, \
 call the MCP tool `pack` of the server `memprove` and read the Context Pack it returns; record \
 facts with its `checkpoint` tool, citing a `memprove run` of the tests, and end your Session \
@@ -557,7 +574,25 @@ mod tests {
             exclude_with(Some(".claude/settings.local.json\n.mcp.json\n"), &entries),
             None
         );
-        assert_eq!(exclude_entries(&[Client::Cursor]).len(), 4);
+        // U24 (H1, H2): the hooks files of Codex and Cursor.
+        assert_eq!(
+            exclude_entries(&[Client::Cursor]),
+            [
+                ".claude/settings.local.json",
+                ".mcp.json",
+                ".cursor/mcp.json",
+                ".cursor/rules/memprove.mdc",
+                ".cursor/hooks.json"
+            ]
+        );
+        assert_eq!(
+            exclude_entries(&[Client::Codex]),
+            [
+                ".claude/settings.local.json",
+                ".mcp.json",
+                ".codex/hooks.json"
+            ]
+        );
     }
 
     #[test]

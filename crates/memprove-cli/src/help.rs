@@ -1005,18 +1005,29 @@ pub const COMMANDS: &[CommandHelp] = &[
 pub const HOOK_COMMANDS: &[CommandHelp] = &[
     CommandHelp {
         name: "hook session-start",
-        summary: "the Claude Code SessionStart hook: print the Context Pack of this directory's Task",
-        usage: &["hook session-start [--config-dir <DIR>]"],
+        summary: "the session-start hook of Claude Code, Codex, and Cursor: print the Context Pack of this directory's Task",
+        usage: &["hook session-start [--client cursor] [--config-dir <DIR>]"],
         calls: Some(
             "getTaskCapsule, and listTasks unless this client session's context names the Task  \
              (control or mcp-read); read requests only",
         ),
-        options: &[(
-            "--config-dir <DIR>",
-            "the configuration directory; wins over $MEMPROVE_CONFIG_DIR (`memprove hook install` writes it into the hook's args)",
-        )],
-        notes: "Configured as a command hook (see `memprove hook print-config`). Reads the\n\
-                SessionStart JSON on standard input (session_id, cwd, source) as untrusted input.\n\
+        options: &[
+            (
+                "--client cursor",
+                "read Cursor's sessionStart JSON (session_id, else conversation_id; the first of workspace_roots, else $CURSOR_PROJECT_DIR, else the current directory; source startup) and print the same text as {\"additional_context\": <text>}; `memprove init --client cursor` writes it into .cursor/hooks.json",
+            ),
+            (
+                "--config-dir <DIR>",
+                "the configuration directory; wins over $MEMPROVE_CONFIG_DIR (`memprove hook install` writes it into the hook's args)",
+            ),
+        ],
+        notes: "Configured as a command hook (see `memprove hook print-config`; `memprove init`\n\
+                also writes it into Codex's .codex/hooks.json, as a shell command, and with\n\
+                --client cursor into .cursor/hooks.json). Reads the SessionStart JSON on\n\
+                standard input (session_id, cwd, source; Codex sends the same members) as\n\
+                untrusted input; without --client cursor, an input that names cursor_version\n\
+                (Cursor running the hooks of .claude/settings.local.json) gets no output, so\n\
+                that Cursor's own handler answers it once.\n\
                 It chooses the Task from this client session's context, else this directory's\n\
                 context, else the only Task in progress in this Workspace, and prints one\n\
                 statement and the Context Pack (budget 9000) in a ```text fence; otherwise one\n\
@@ -1024,7 +1035,8 @@ pub const HOOK_COMMANDS: &[CommandHelp] = &[
                 session's context names it, one statement names the Task and its state; when this\n\
                 directory's context names it, the only Task in progress in this Workspace is\n\
                 chosen instead, and the statement names the finished Task and its state. Its\n\
-                whole output is at most 10,000 UTF-16 code units and never starts with {. It\n\
+                whole output is at most 10,000 UTF-16 code units and, without --client cursor,\n\
+                never starts with {. It\n\
                 never writes the ledger. It appends\n\
                 export MEMPROVE_CLIENT_SESSION='<session_id>' to $CLAUDE_ENV_FILE once (only a\n\
                 session_id of 1 to 128 characters of A-Z, a-z, 0-9, _, and -), and records the\n\
@@ -1211,7 +1223,8 @@ pub const MAINTENANCE_COMMANDS: &[CommandHelp] = &[
                 scripts/install.sh). In the Git worktree of the current directory it: registers\n\
                 the Project (registerProject with the operator's token; a repository already\n\
                 registered gets its Project back); adds .claude/settings.local.json and .mcp.json\n\
-                (and Cursor's .cursor/mcp.json and .cursor/rules/memprove.mdc) to\n\
+                (and Codex's .codex/hooks.json; Cursor's .cursor/mcp.json,\n\
+                .cursor/rules/memprove.mdc and .cursor/hooks.json) to\n\
                 .git/info/exclude, so that they never become untracked files that keep a run's\n\
                 Evidence from being verified; for Claude Code runs `hook install` (the\n\
                 SessionStart hook and env.MEMPROVE_CONFIG_DIR in .claude/settings.local.json,\n\
@@ -1221,9 +1234,12 @@ pub const MAINTENANCE_COMMANDS: &[CommandHelp] = &[
                 when CODEX_HOME is set, as Codex reads it) and a note of under\n\
                 five lines into AGENTS.md (between <!-- memprove:begin --> and\n\
                 <!-- memprove:end -->, replaced on a second run) telling the agent to read the\n\
-                Context Pack through the MCP tool pack first; for Cursor writes\n\
-                mcpServers.memprove into .cursor/mcp.json and the same note as an always-applied\n\
-                rule in .cursor/rules/memprove.mdc; then runs doctor and prints its report. Every\n\
+                Context Pack through the MCP tool pack first, and the SessionStart hook into\n\
+                .codex/hooks.json (Codex runs it once you trust the project and approve the hook\n\
+                in /hooks; init trusts nothing for you); for Cursor writes mcpServers.memprove\n\
+                into .cursor/mcp.json, the sessionStart hook (hook session-start --client\n\
+                cursor) into .cursor/hooks.json, and the same note as an always-applied rule in\n\
+                .cursor/rules/memprove.mdc; then runs doctor and prints its report. Every\n\
                 file it edits keeps its other content; run again, it changes nothing. What init\n\
                 wrote under the previous name continuity is replaced: the AGENTS.md note between\n\
                 <!-- continuity:begin --> and <!-- continuity:end -->, the Codex table\n\

@@ -430,9 +430,9 @@ struct Start {
     source: &'static str,
 }
 
-/// Reads and checks the hook's standard input; `Err` is the clause that
-/// says what is wrong with it, never a part of it.
-fn read_start(input: &mut dyn Read) -> Result<Start, &'static str> {
+/// Reads the hook's standard input as one JSON object; `Err` is the clause
+/// that says what is wrong with it, never a part of it.
+fn read_input(input: &mut dyn Read) -> Result<JsonValue, &'static str> {
     let mut bytes = Vec::new();
     input
         .take(u64::try_from(MAX_INPUT_BYTES).unwrap_or(u64::MAX) + 1)
@@ -446,6 +446,28 @@ fn read_start(input: &mut dyn Read) -> Result<Start, &'static str> {
     if value.as_object().is_none() {
         return Err(" is not a JSON object");
     }
+    Ok(value)
+}
+
+/// Reads and checks the hook's standard input; `Err` is the clause that
+/// says what is wrong with it, never a part of it.
+#[cfg(test)]
+fn read_start(input: &mut dyn Read) -> Result<Start, &'static str> {
+    start_of(&read_input(input)?)
+}
+
+/// U24 (H2): whether `value` is the input of a Cursor hook (it names
+/// `cursor_version`, which Cursor gives every hook). Cursor also runs the
+/// hooks of `.claude/settings.local.json`; the Claude Code handler then
+/// prints nothing and leaves the answer to Cursor's own handler
+/// (`hook session-start --client cursor`), so that a Pack is injected once.
+fn is_cursor_input(value: &JsonValue) -> bool {
+    value.get("cursor_version").is_some()
+}
+
+/// Checks a Claude Code (or Codex, which sends the same members)
+/// `SessionStart` input; `Err` as [`read_input`].
+fn start_of(value: &JsonValue) -> Result<Start, &'static str> {
     if let Some(name) = value.get("hook_event_name")
         && name.as_str() != Some("SessionStart")
     {
@@ -481,10 +503,94 @@ fn read_start(input: &mut dyn Read) -> Result<Start, &'static str> {
 /// input, then decides what to print. Never fails: every problem is a
 /// statement.
 pub fn session_start(input: &mut dyn Read, environment: &Environment) -> Outcome {
-    let start = match read_start(input) {
+    let start = match read_input(input) {
+        Ok(value) if is_cursor_input(&value) => return Outcome::statement(String::new()),
+        Ok(value) => start_of(&value),
+        Err(why) => Err(why),
+    };
+    let start = match start {
         Ok(start) => start,
         Err(why) => return Outcome::statement(failed(&format!("the SessionStart input{why}"))),
     };
+    started(&start, environment)
+}
+
+/// U24 (H2): `hook session-start --client cursor`: Cursor's `sessionStart`
+/// input, checked as the hook checks Claude Code's: its `session_id` (else
+/// `conversation_id`) is the client session; the Workspace is the first of
+/// `workspace_roots`, else `project_dir` (`CURSOR_PROJECT_DIR`), else the
+/// current directory, where Cursor runs a project's hooks; the source is
+/// `startup`, since Cursor names none. What it prints is the same text;
+/// [`cursor_output`] wraps it in the JSON Cursor reads.
+pub fn cursor_session_start(
+    input: &mut dyn Read,
+    environment: &Environment,
+    project_dir: Option<&OsStr>,
+) -> Outcome {
+    let start = read_input(input).and_then(|value| cursor_start_of(&value, project_dir));
+    match start {
+        Ok(start) => started(&start, environment),
+        Err(why) => Outcome::statement(failed(&format!("the sessionStart input{why}"))),
+    }
+}
+
+/// U24 (H2): what [`cursor_session_start`] reads from Cursor's input.
+fn cursor_start_of(value: &JsonValue, project_dir: Option<&OsStr>) -> Result<Start, &'static str> {
+    if let Some(name) = value.get("hook_event_name")
+        && name.as_str() != Some("sessionStart")
+    {
+        return Err("'s hook_event_name is not sessionStart");
+    }
+    let session_id = ["session_id", "conversation_id"]
+        .into_iter()
+        .find_map(|name| value.get(name).and_then(JsonValue::as_str))
+        .filter(|id| is_client_session(id))
+        .ok_or("'s session_id is not 1 to 128 characters of A-Z, a-z, 0-9, _, -")?
+        .to_owned();
+    let directory = |path: &Path| {
+        path.is_absolute()
+            .then(|| fs::canonicalize(path).ok())
+            .flatten()
+            .filter(|path| path.is_dir())
+    };
+    let root = value
+        .get("workspace_roots")
+        .and_then(JsonValue::as_array)
+        .and_then(|roots| roots.first())
+        .and_then(JsonValue::as_str)
+        .map(Path::new);
+    let cwd = match root {
+        Some(root) => directory(root),
+        None => project_dir
+            .filter(|dir| !dir.is_empty())
+            .map(Path::new)
+            .map_or_else(
+                || std::env::current_dir().ok().and_then(|dir| directory(&dir)),
+                directory,
+            ),
+    }
+    .ok_or("'s workspace_roots does not begin with the absolute path of an existing directory")?;
+    Ok(Start {
+        session_id,
+        cwd,
+        source: "startup",
+    })
+}
+
+/// U24 (H2): `text`, what `hook session-start` prints, as Cursor's
+/// `sessionStart` output: `{"additional_context": <text>}` and a line end;
+/// nothing when `text` is empty.
+#[must_use]
+pub fn cursor_output(text: &str) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+    format!("{{\"additional_context\":{}}}\n", json_string(text))
+}
+
+/// What the hook does with a checked input: exports the client session,
+/// records it, and injects the Pack.
+fn started(start: &Start, environment: &Environment) -> Outcome {
     let exported = export_client_session(environment.env_file.as_deref(), &start.session_id)
         .unwrap_or_else(|why| {
             eprintln!(
@@ -503,14 +609,14 @@ pub fn session_start(input: &mut dyn Read, environment: &Environment) -> Outcome
         ));
     };
     if exported {
-        record_client_session(&start, &store);
+        record_client_session(start, &store);
     }
     // U11 T1 (Owner O3): half a declaration, or one the server refuses, is
     // one line on standard error; the opening then names no agent.
     if let Err(warning) = declared_agent(environment) {
         eprintln!("{warning}");
     }
-    inject(&start, &store, environment, exported)
+    inject(start, &store, environment, exported)
         .unwrap_or_else(|why| Outcome::statement(failed(&why)))
 }
 
@@ -2180,6 +2286,19 @@ fn is_own(handler: &JsonValue) -> bool {
 /// a `hooks` object that only the removal emptied is removed with it;
 /// everything else is kept as it was, in its order.
 fn edit(settings: &JsonValue, add: Option<JsonValue>) -> Result<JsonValue, String> {
+    edit_event(settings, "SessionStart", add, is_own)
+}
+
+/// U24 (H1): [`edit`] for the groups of `event`, with `own` saying which
+/// handlers `install` wrote: Claude Code's `SessionStart` and its exec-form
+/// handler, or Codex's `SessionStart` and its shell-form handler
+/// ([`is_own_shell_handler`]).
+fn edit_event(
+    settings: &JsonValue,
+    event: &str,
+    add: Option<JsonValue>,
+    own: fn(&JsonValue) -> bool,
+) -> Result<JsonValue, String> {
     let JsonValue::Object(members) = settings else {
         return Err("its top level is not a JSON object".to_owned());
     };
@@ -2190,11 +2309,11 @@ fn edit(settings: &JsonValue, add: Option<JsonValue>) -> Result<JsonValue, Strin
         Some(JsonValue::Object(hooks)) => hooks.clone(),
         Some(_) => return Err("its \"hooks\" is not a JSON object".to_owned()),
     };
-    let start_at = hooks.iter().position(|(name, _)| name == "SessionStart");
+    let start_at = hooks.iter().position(|(name, _)| name == event);
     let groups = match start_at.map(|index| &hooks[index].1) {
         None => Vec::new(),
         Some(JsonValue::Array(groups)) => groups.clone(),
-        Some(_) => return Err("its \"hooks\".\"SessionStart\" is not a JSON array".to_owned()),
+        Some(_) => return Err(format!("its \"hooks\".\"{event}\" is not a JSON array")),
     };
     let had_groups = !groups.is_empty();
     let mut kept = Vec::new();
@@ -2214,7 +2333,7 @@ fn edit(settings: &JsonValue, add: Option<JsonValue>) -> Result<JsonValue, Strin
         };
         let remaining = handlers
             .iter()
-            .filter(|handler| !is_own(handler))
+            .filter(|handler| !own(handler))
             .cloned()
             .collect::<Vec<_>>();
         if remaining.len() == handlers.len() {
@@ -2235,7 +2354,7 @@ fn edit(settings: &JsonValue, add: Option<JsonValue>) -> Result<JsonValue, Strin
         }
         Some(index) => hooks[index].1 = JsonValue::Array(kept),
         None if kept.is_empty() => {}
-        None => hooks.push(("SessionStart".to_owned(), JsonValue::Array(kept))),
+        None => hooks.push((event.to_owned(), JsonValue::Array(kept))),
     }
     match hooks_at {
         Some(index) if emptied && hooks.is_empty() => {
@@ -2393,6 +2512,204 @@ pub fn install_mcp_json(
     .apply(true)
 }
 
+/// U24 (H1): the file Codex reads a project's hooks from, relative to the
+/// Workspace root. Codex loads it only for a project it trusts, and runs a
+/// handler only after the user trusted it (`/hooks` in Codex).
+pub const CODEX_HOOKS_FILE: &str = ".codex/hooks.json";
+
+/// U24 (H2): the file Cursor reads a project's hooks from, relative to the
+/// Workspace root.
+pub const CURSOR_HOOKS_FILE: &str = ".cursor/hooks.json";
+
+/// U24 (H2): the option and value of `hook session-start` in the handler
+/// `init` writes for Cursor: Cursor's `sessionStart` input, and its answer
+/// as JSON.
+pub const CURSOR_CLIENT_ARGUMENTS: [&str; 2] = ["--client", "cursor"];
+
+/// `text` as one word of a POSIX shell command line: in single quotes, a
+/// single quote as `'\''`.
+fn shell_word(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
+}
+
+/// U24 (H1, H2): the command line of the handler for a client that runs a
+/// hook's command through a shell (Codex, Cursor): `'<executable>' hook
+/// session-start`, then `--client cursor` for Cursor, then `--config-dir
+/// '<config_dir>'`.
+#[must_use]
+pub fn shell_command(executable: &str, config_dir: &str, cursor: bool) -> String {
+    let mut command = format!("{} hook session-start", shell_word(executable));
+    if cursor {
+        command.push(' ');
+        command.push_str(&CURSOR_CLIENT_ARGUMENTS.join(" "));
+    }
+    command.push(' ');
+    command.push_str(crate::CONFIG_DIR_OPTION);
+    command.push(' ');
+    command.push_str(&shell_word(config_dir));
+    command
+}
+
+/// The first word of the shell command line `command` as a POSIX shell
+/// reads it (quotes and backslashes taken out), and the text after it;
+/// `None` when a quote is left open.
+fn first_shell_word(command: &str) -> Option<(String, &str)> {
+    let command = command.trim_start();
+    let mut word = String::new();
+    let mut quote = None;
+    let mut chars = command.char_indices();
+    while let Some((index, character)) = chars.next() {
+        match (quote, character) {
+            (None, '\'' | '"') => quote = Some(character),
+            (Some(open), character) if character == open => quote = None,
+            (None | Some('"'), '\\') => word.push(chars.next()?.1),
+            (None, character) if character.is_whitespace() => {
+                return Some((word, &command[index..]));
+            }
+            (_, character) => word.push(character),
+        }
+    }
+    quote.is_none().then_some((word, ""))
+}
+
+/// U24 (H1, H2): whether `handler` is a shell-form handler `init` wrote: a
+/// command (Cursor's `type` may be left out) whose program is `memprove`
+/// (or of [`PREVIOUS_NAME`]), wherever it lives, with the words `hook
+/// session-start` after it.
+fn is_own_shell_handler(handler: &JsonValue) -> bool {
+    handler
+        .get("type")
+        .is_none_or(|kind| kind.as_str() == Some("command"))
+        && handler
+            .get("command")
+            .and_then(JsonValue::as_str)
+            .and_then(first_shell_word)
+            .is_some_and(|(program, rest)| {
+                is_own_program(&program)
+                    && rest
+                        .split_whitespace()
+                        .take(2)
+                        .eq(["hook", "session-start"])
+            })
+}
+
+/// U24 (H1): the `SessionStart` group of `.codex/hooks.json`: no matcher
+/// (every source, as Claude Code's group), one command handler with the
+/// [`HANDLER_TIMEOUT_SECONDS`] timeout, and `additionalContextLimit` 0, so
+/// that Codex gives the model the whole output (at most
+/// [`MAX_OUTPUT_UNITS`]) instead of spilling it to a file past its default
+/// of about 2,500 tokens.
+fn codex_group(executable: &str, config_dir: &str) -> JsonValue {
+    let member = |name: &str, value: JsonValue| (name.to_owned(), value);
+    JsonValue::Object(vec![member(
+        "hooks",
+        JsonValue::Array(vec![JsonValue::Object(vec![
+            member("type", JsonValue::String("command".to_owned())),
+            member(
+                "command",
+                JsonValue::String(shell_command(executable, config_dir, false)),
+            ),
+            member(
+                "timeout",
+                JsonValue::Number(HANDLER_TIMEOUT_SECONDS.to_string()),
+            ),
+            member("additionalContextLimit", JsonValue::Number("0".to_owned())),
+        ])]),
+    )])
+}
+
+/// U24 (H2): the `sessionStart` handler of `.cursor/hooks.json`: the shell
+/// command with `--client cursor` and the [`HANDLER_TIMEOUT_SECONDS`]
+/// timeout.
+fn cursor_handler(executable: &str, config_dir: &str) -> JsonValue {
+    JsonValue::Object(vec![
+        (
+            "command".to_owned(),
+            JsonValue::String(shell_command(executable, config_dir, true)),
+        ),
+        (
+            "timeout".to_owned(),
+            JsonValue::Number(HANDLER_TIMEOUT_SECONDS.to_string()),
+        ),
+    ])
+}
+
+/// U24 (H2): `hooks` (Cursor's `hooks.json`, `{}` when new) with `version`
+/// (1 when there is none), and the handler of [`cursor_handler`] as the
+/// last of `hooks.sessionStart`, in place of every handler `init` wrote
+/// there before; everything else is kept, in its order.
+fn with_cursor_handler(
+    hooks_file: &JsonValue,
+    executable: &str,
+    config_dir: &str,
+) -> Result<JsonValue, String> {
+    let JsonValue::Object(members) = hooks_file else {
+        return Err("its top level is not a JSON object".to_owned());
+    };
+    let mut members = members.clone();
+    if !members.iter().any(|(name, _)| name == "version") {
+        members.insert(0, ("version".to_owned(), JsonValue::Number("1".to_owned())));
+    }
+    let mut hooks = match members.iter().find(|(name, _)| name == "hooks") {
+        None => Vec::new(),
+        Some((_, JsonValue::Object(hooks))) => hooks.clone(),
+        Some(_) => return Err("its \"hooks\" is not a JSON object".to_owned()),
+    };
+    let mut handlers = match hooks.iter().find(|(name, _)| name == "sessionStart") {
+        None => Vec::new(),
+        Some((_, JsonValue::Array(handlers))) => handlers.clone(),
+        Some(_) => return Err("its \"hooks\".\"sessionStart\" is not a JSON array".to_owned()),
+    };
+    handlers.retain(|handler| !is_own_shell_handler(handler));
+    handlers.push(cursor_handler(executable, config_dir));
+    set(&mut hooks, "sessionStart", JsonValue::Array(handlers));
+    set(&mut members, "hooks", JsonValue::Object(hooks));
+    Ok(JsonValue::Object(members))
+}
+
+/// U24 (H1): `init` for Codex: the `SessionStart` group of [`codex_group`]
+/// in `hooks_file` (`<Workspace root>/.codex/hooks.json`), in place of
+/// every handler `init` wrote there before; everything else is kept, and
+/// the file is created when it does not exist.
+///
+/// # Errors
+///
+/// As [`install`].
+pub fn install_codex_hooks(
+    hooks_file: &Path,
+    executable: &str,
+    config_dir: &str,
+) -> Result<Change, String> {
+    Edit::of(hooks_file, |original| {
+        edit_event(
+            original,
+            "SessionStart",
+            Some(codex_group(executable, config_dir)),
+            is_own_shell_handler,
+        )
+    })?
+    .apply(true)
+}
+
+/// U24 (H2): `init` for Cursor: the handler of [`cursor_handler`] in
+/// `hooks_file` (`<Workspace root>/.cursor/hooks.json`), as
+/// [`with_cursor_handler`] puts it; the file is created when it does not
+/// exist.
+///
+/// # Errors
+///
+/// As [`install`].
+pub fn install_cursor_hooks(
+    hooks_file: &Path,
+    executable: &str,
+    config_dir: &str,
+) -> Result<Change, String> {
+    Edit::of(hooks_file, |original| {
+        with_cursor_handler(original, executable, config_dir)
+    })?
+    .apply(true)
+}
+
 /// `hook uninstall`: removes the handlers `install` wrote from the settings
 /// file `settings`, and nothing else; U5 P3: with them
 /// `env.MEMPROVE_CONFIG_DIR` and an `mcpServers.memprove` it wrote
@@ -2482,6 +2799,256 @@ mod tests {
         assert_eq!(
             read(&"x".repeat(MAX_INPUT_BYTES + 1)),
             Err(" exceeds 65536 bytes")
+        );
+    }
+
+    /// U24 (H1): Codex sends the members Claude Code sends, and more
+    /// (`model`, `permission_mode`, a `transcript_path` that may be null);
+    /// the hook takes them as it takes Claude Code's.
+    #[test]
+    fn u24_codex_input_is_read_as_claude_codes() {
+        let cwd = std::env::temp_dir();
+        let text = format!(
+            r#"{{"session_id":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","transcript_path":null,"cwd":{},"hook_event_name":"SessionStart","model":"gpt-5.5-codex","permission_mode":"default","source":"resume"}}"#,
+            json_string(cwd.to_str().unwrap())
+        );
+        let value = read_input(&mut text.as_bytes()).unwrap();
+        assert!(!is_cursor_input(&value));
+        let start = start_of(&value).unwrap();
+        assert_eq!(start.source, "resume");
+        assert_eq!(start.session_id, "019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b");
+    }
+
+    /// U24 (H2): Cursor's `sessionStart` input: the session from
+    /// `session_id` (else `conversation_id`), the Workspace from the first of
+    /// `workspace_roots` (else `CURSOR_PROJECT_DIR`), the source `startup`.
+    /// The Claude Code handler, which Cursor also runs, prints nothing for
+    /// it.
+    #[test]
+    fn u24_cursor_input_is_read_from_its_own_members() {
+        let base = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(base.path()).unwrap();
+        let root_text = root.to_str().unwrap();
+        let good = format!(
+            r#"{{"conversation_id":"c-1","generation_id":"g-1","model":"auto","hook_event_name":"sessionStart","cursor_version":"3.25.6","workspace_roots":[{}],"user_email":null,"transcript_path":null,"session_id":"0b6f2c1e-1111-4a2b-9c3d-123456789abc","is_background_agent":false,"composer_mode":"agent"}}"#,
+            json_string(root_text)
+        );
+        let value = parse_strict(&good).unwrap();
+        assert!(is_cursor_input(&value));
+        let start = cursor_start_of(&value, None).unwrap();
+        assert_eq!(start.session_id, "0b6f2c1e-1111-4a2b-9c3d-123456789abc");
+        assert_eq!(start.cwd, root);
+        assert_eq!(start.source, "startup");
+
+        let without_session = good.replace(
+            r#""session_id":"0b6f2c1e-1111-4a2b-9c3d-123456789abc","#,
+            "",
+        );
+        let start = cursor_start_of(&parse_strict(&without_session).unwrap(), None).unwrap();
+        assert_eq!(start.session_id, "c-1");
+
+        let without_roots = good.replace(
+            &format!(r#""workspace_roots":[{}],"#, json_string(root_text)),
+            "",
+        );
+        let start = cursor_start_of(
+            &parse_strict(&without_roots).unwrap(),
+            Some(root.as_os_str()),
+        )
+        .unwrap();
+        assert_eq!(start.cwd, root);
+
+        for bad in [
+            good.replace("\"sessionStart\"", "\"SessionStart\""),
+            good.replace("0b6f2c1e-1111-4a2b-9c3d-123456789abc", "a b"),
+            good.replace(&json_string(root_text), "\"relative\""),
+            good.replace(
+                &json_string(root_text),
+                &json_string(&format!("{root_text}/missing")),
+            ),
+        ] {
+            assert!(
+                cursor_start_of(&parse_strict(&bad).unwrap(), None).is_err(),
+                "{bad}"
+            );
+        }
+
+        // The Claude Code handler answers Cursor's input with nothing.
+        let environment = Environment::from_process();
+        let outcome = session_start(&mut good.as_bytes(), &environment);
+        assert_eq!(outcome.finish(), "");
+    }
+
+    /// U24 (H2): Cursor reads `{"additional_context": …}`; the text is the
+    /// hook's, escaped as a JSON string; nothing stays nothing.
+    #[test]
+    fn u24_cursor_output_wraps_the_text_in_cursors_json() {
+        let text = "memprove: a \"quoted\" word\n```text\nPack\n```\n";
+        let output = cursor_output(text);
+        assert!(output.ends_with("}\n"), "{output}");
+        let value = parse_strict(output.trim_end()).unwrap();
+        assert_eq!(
+            value.get("additional_context").and_then(JsonValue::as_str),
+            Some(text)
+        );
+        assert_eq!(cursor_output(""), "");
+    }
+
+    /// U24 (H1, H2): the shell command line of the Codex and Cursor handlers
+    /// quotes both paths, and the handler is recognised again whatever its
+    /// path, so that `init` replaces it instead of adding a second.
+    #[test]
+    fn u24_shell_handlers_quote_their_paths_and_are_recognised() {
+        let command = shell_command(
+            "/opt/it's here/memprove",
+            "/home/me/.memprove/config",
+            false,
+        );
+        assert_eq!(
+            command,
+            r"'/opt/it'\''s here/memprove' hook session-start --config-dir '/home/me/.memprove/config'"
+        );
+        assert_eq!(
+            first_shell_word(&command),
+            Some((
+                "/opt/it's here/memprove".to_owned(),
+                " hook session-start --config-dir '/home/me/.memprove/config'"
+            ))
+        );
+        assert_eq!(
+            shell_command("/bin/memprove", "/c", true),
+            "'/bin/memprove' hook session-start --client cursor --config-dir '/c'"
+        );
+        let handler = |command: &str| {
+            JsonValue::Object(vec![(
+                "command".to_owned(),
+                JsonValue::String(command.to_owned()),
+            )])
+        };
+        for own in [
+            command.as_str(),
+            "/usr/local/bin/memprove hook session-start",
+            "\"/a b/continuity\" hook session-start --config-dir /c",
+        ] {
+            assert!(is_own_shell_handler(&handler(own)), "{own}");
+        }
+        for other in [
+            "'/bin/memprove' mcp serve",
+            "'/bin/memproved' hook session-start",
+            "echo memprove hook session-start",
+            "'/bin/memprove hook session-start",
+        ] {
+            assert!(!is_own_shell_handler(&handler(other)), "{other}");
+        }
+    }
+
+    /// U24 (H1): `.codex/hooks.json` gets one `SessionStart` group with the
+    /// handler; a second install changes nothing, and one with another path
+    /// replaces the handler; another hook of the file stays.
+    #[test]
+    fn u24_codex_hooks_file_holds_one_handler_and_keeps_the_rest() {
+        let base = tempfile::tempdir().unwrap();
+        let path = base.path().join(".codex").join("hooks.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            r#"{"description":"mine","hooks":{"Stop":[{"hooks":[{"type":"command","command":"say done"}]}]}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            install_codex_hooks(&path, "/a/memprove", "/a/config").unwrap(),
+            Change::Written(_)
+        ));
+        assert!(matches!(
+            install_codex_hooks(&path, "/a/memprove", "/a/config").unwrap(),
+            Change::Unchanged(_)
+        ));
+        assert!(matches!(
+            install_codex_hooks(&path, "/b/memprove", "/b/config").unwrap(),
+            Change::Written(_)
+        ));
+        let value = parse_strict(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            value.get("description").and_then(JsonValue::as_str),
+            Some("mine")
+        );
+        let hooks = value.get("hooks").unwrap();
+        assert!(hooks.get("Stop").is_some());
+        let groups = hooks
+            .get("SessionStart")
+            .and_then(JsonValue::as_array)
+            .unwrap();
+        assert_eq!(groups.len(), 1, "{groups:?}");
+        let handler = &groups[0]
+            .get("hooks")
+            .and_then(JsonValue::as_array)
+            .unwrap()[0];
+        assert_eq!(
+            handler.get("command").and_then(JsonValue::as_str),
+            Some("'/b/memprove' hook session-start --config-dir '/b/config'")
+        );
+        assert_eq!(
+            handler.get("type").and_then(JsonValue::as_str),
+            Some("command")
+        );
+        assert_eq!(
+            handler.get("timeout"),
+            Some(&JsonValue::Number("10".to_owned()))
+        );
+        assert_eq!(
+            handler.get("additionalContextLimit"),
+            Some(&JsonValue::Number("0".to_owned()))
+        );
+        assert!(groups[0].get("matcher").is_none());
+    }
+
+    /// U24 (H2): `.cursor/hooks.json` gets `version` 1 and the handler in
+    /// `hooks.sessionStart`; a handler of someone else stays before it, a
+    /// second install changes nothing, a `version` that is there is kept.
+    #[test]
+    fn u24_cursor_hooks_file_holds_one_handler_and_keeps_the_rest() {
+        let base = tempfile::tempdir().unwrap();
+        let path = base.path().join(".cursor").join("hooks.json");
+        assert!(matches!(
+            install_cursor_hooks(&path, "/a/memprove", "/a/config").unwrap(),
+            Change::Written(_)
+        ));
+        let first = parse_strict(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            first.get("version"),
+            Some(&JsonValue::Number("1".to_owned()))
+        );
+        fs::write(
+            &path,
+            r#"{"version":2,"hooks":{"sessionStart":[{"command":"./mine.sh"},{"command":"'/old/memprove' hook session-start --client cursor"}],"stop":[{"command":"./stop.sh"}]}}"#,
+        )
+        .unwrap();
+        install_cursor_hooks(&path, "/a/memprove", "/a/config").unwrap();
+        assert!(matches!(
+            install_cursor_hooks(&path, "/a/memprove", "/a/config").unwrap(),
+            Change::Unchanged(_)
+        ));
+        let value = parse_strict(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            value.get("version"),
+            Some(&JsonValue::Number("2".to_owned()))
+        );
+        let hooks = value.get("hooks").unwrap();
+        assert!(hooks.get("stop").is_some());
+        let handlers = hooks
+            .get("sessionStart")
+            .and_then(JsonValue::as_array)
+            .unwrap();
+        let commands: Vec<&str> = handlers
+            .iter()
+            .filter_map(|handler| handler.get("command").and_then(JsonValue::as_str))
+            .collect();
+        assert_eq!(
+            commands,
+            [
+                "./mine.sh",
+                "'/a/memprove' hook session-start --client cursor --config-dir '/a/config'"
+            ]
         );
     }
 

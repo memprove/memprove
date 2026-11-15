@@ -75,6 +75,15 @@ and measure whether memprove's memory helps it.
   Ubuntu 22.04) and macOS arm64, installs each archive once and runs
   `doctor`, and attaches the archives with their SHA-256 to the tag's
   GitHub Release. Linux arm64 is left out until memproved starts there.
+- `memprove init` writes the session-start hook for Codex
+  (`.codex/hooks.json`, the same `hook session-start` as Claude Code's,
+  run once you approve it in Codex's `/hooks`) and for Cursor
+  (`.cursor/hooks.json`, `hook session-start --client cursor`, which reads
+  Cursor's `sessionStart` input and answers with `additional_context`), so
+  that the Pack is injected at the start of a session in all three
+  clients; both files go into `.git/info/exclude`. The Claude Code
+  handler prints nothing when Cursor runs it, so Cursor gets the Pack
+  once.
 
 ## 0.1.0 · 2026-11-14
 

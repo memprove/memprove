@@ -980,7 +980,7 @@ fn p4g_the_mcp_commands_have_their_own_help() {
     );
     let general = stdout(&cli(empty.path(), &["--help"]));
     let hook = general
-        .find("\nSession-start hook (Claude Code):\n")
+        .find("\nSession-start hook (Claude Code, Codex, Cursor):\n")
         .unwrap();
     let mcp = general.find("\nMCP server (Claude Code):\n").unwrap();
     let scopes = general.find("\nScopes: ").unwrap();

@@ -579,13 +579,28 @@ impl InitPlan {
         let server = init::edit_text(&config_toml, true, self.dry_run, |existing| {
             init::codex_config_with(existing, &self.executable, &self.config_text)
         })?;
+        // U24 (H1): the SessionStart hook in the project's .codex/hooks.json.
+        let hooks_file = self.root.join(hook::CODEX_HOOKS_FILE);
+        let hooks = if self.dry_run {
+            init::Step::WouldWrite(hooks_file)
+        } else {
+            step_of(hook::install_codex_hooks(
+                &hooks_file,
+                &self.executable,
+                &self.config_text,
+            )?)
+        };
+        let hooks_written = matches!(hooks, init::Step::Written(_));
         let note = init::edit_text(
             &self.root.join("AGENTS.md"),
             false,
             self.dry_run,
             init::agents_with_note,
         )?;
-        let mut steps = vec![server];
+        let mut steps = vec![server, hooks];
+        if hooks_written {
+            steps.push(init::Step::Note(init::CODEX_TRUST_NOTE.to_owned()));
+        }
         let written = matches!(note, init::Step::Written(_));
         steps.push(note);
         if written {
@@ -607,6 +622,17 @@ impl InitPlan {
                 &self.config_text,
             )?)
         };
+        // U24 (H2): the sessionStart hook in .cursor/hooks.json.
+        let hooks_file = self.root.join(hook::CURSOR_HOOKS_FILE);
+        let hooks = if self.dry_run {
+            Step::WouldWrite(hooks_file)
+        } else {
+            step_of(hook::install_cursor_hooks(
+                &hooks_file,
+                &self.executable,
+                &self.config_text,
+            )?)
+        };
         let rule = init::cursor_rule();
         let note = init::edit_text(
             &self.root.join(".cursor").join("rules").join("memprove.mdc"),
@@ -614,7 +640,7 @@ impl InitPlan {
             self.dry_run,
             |existing| (existing != Some(rule.as_str())).then(|| rule.clone()),
         )?;
-        let mut steps = vec![server, note];
+        let mut steps = vec![server, hooks, note];
         // U22 (U20-N1): the rule init wrote under the previous name.
         steps.extend(init::remove_previous_cursor_rule(
             &self
@@ -794,6 +820,8 @@ fn startup_context() -> (Option<ContextStore>, ContextLookup) {
 /// within [`hook::TIME_LIMIT`] or failed, and exits 0 in every case (Owner
 /// condition o), ending that thread with the process.
 fn hook_session_start(start: HookStart) -> ! {
+    // U24 (H2): Cursor reads the answer as JSON, whatever it says.
+    let cursor = matches!(start, HookStart::Cursor(_));
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
         let outcome = match start {
@@ -801,6 +829,11 @@ fn hook_session_start(start: HookStart) -> ! {
             HookStart::Run(config_dir) => hook::session_start(
                 &mut std::io::stdin().lock(),
                 &hook::Environment::from_process().with_config_dir(config_dir),
+            ),
+            HookStart::Cursor(config_dir) => hook::cursor_session_start(
+                &mut std::io::stdin().lock(),
+                &hook::Environment::from_process().with_config_dir(config_dir),
+                std::env::var_os("CURSOR_PROJECT_DIR").as_deref(),
             ),
             HookStart::Refused(refusal) => {
                 hook::Outcome::from_statement(hook::refusal_statement(refusal))
@@ -812,6 +845,11 @@ fn hook_session_start(start: HookStart) -> ! {
         Ok(outcome) => outcome.finish(),
         Err(RecvTimeoutError::Timeout) => hook::timeout_statement(),
         Err(RecvTimeoutError::Disconnected) => hook::internal_error_statement(),
+    };
+    let text = if cursor {
+        hook::cursor_output(&text)
+    } else {
+        text
     };
     let mut stdout = std::io::stdout().lock();
     let _ = stdout.write_all(text.as_bytes());

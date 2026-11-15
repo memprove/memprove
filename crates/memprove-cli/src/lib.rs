@@ -211,10 +211,11 @@ Current context:
                  naming this client's own Session and declared agent as its ender
   context show   prints the current context; no daemon call, no token
 
-Session-start hook (Claude Code):
-  hook session-start [--config-dir <DIR>]
+Session-start hook (Claude Code, Codex, Cursor):
+  hook session-start [--client cursor] [--config-dir <DIR>]
                  reads the SessionStart JSON on standard input; prints one statement
-                 and the Context Pack in a fence; read requests only; always exits 0
+                 and the Context Pack in a fence (for Cursor, as its JSON); read
+                 requests only; always exits 0
   hook print-config
                  prints the settings fragment for .claude/settings.local.json
   hook install [--allow-tools]
@@ -865,6 +866,10 @@ pub enum HookStart {
     /// Exactly `hook session-start`, or (U7 P2, Owner O4) `hook
     /// session-start --config-dir <DIR>` with the directory.
     Run(Option<OsString>),
+    /// U24 (H2): `hook session-start --client cursor`, with or without
+    /// `--config-dir <DIR>` after it: Cursor's `sessionStart` input, and the
+    /// answer as Cursor's JSON.
+    Cursor(Option<OsString>),
     /// `hook session-start` with anything else, and why (U8 K1).
     Refused(ConfigDirRefusal),
 }
@@ -903,8 +908,22 @@ pub fn hook_session_start_requested(args: &[OsString]) -> Option<HookStart> {
         return None;
     }
     let words = command_words(args);
-    (words.len() >= 2 && words[0] == "hook" && words[1] == "session-start")
-        .then(|| config_dir_argument(args, "hook", "session-start"))
+    (words.len() >= 2 && words[0] == "hook" && words[1] == "session-start").then(|| match args {
+        [first, second, option, client, rest @ ..]
+            if *option == hook::CURSOR_CLIENT_ARGUMENTS[0]
+                && *client == hook::CURSOR_CLIENT_ARGUMENTS[1] =>
+        {
+            let without: Vec<OsString> = [first.clone(), second.clone()]
+                .into_iter()
+                .chain(rest.iter().cloned())
+                .collect();
+            match config_dir_argument(&without, "hook", "session-start") {
+                HookStart::Run(dir) => HookStart::Cursor(dir),
+                refused => refused,
+            }
+        }
+        _ => config_dir_argument(args, "hook", "session-start"),
+    })
 }
 
 /// U7 P2 (D2 F13, Owner O4): the option a hook or MCP server entry passes
@@ -977,7 +996,7 @@ fn mcp_serve_config_dir_error(args: &[OsString]) -> Option<String> {
         return None;
     }
     match config_dir_argument(args, "mcp", "serve") {
-        HookStart::Run(_) => None,
+        HookStart::Run(_) | HookStart::Cursor(_) => None,
         HookStart::Refused(ConfigDirRefusal::GlobalOption(name)) => Some(format!(
             "{name} does not apply to mcp serve; {CONFIG_DIR_OPTION} <DIR> goes right after \
              mcp serve, with no global option"
@@ -1005,7 +1024,7 @@ fn mcp_serve_config_dir_error(args: &[OsString]) -> Option<String> {
 pub fn mcp_serve_config_dir(args: &[OsString]) -> Option<OsString> {
     match config_dir_argument(args, "mcp", "serve") {
         HookStart::Run(dir) => dir,
-        HookStart::Refused(_) => None,
+        HookStart::Cursor(_) | HookStart::Refused(_) => None,
     }
 }
 
