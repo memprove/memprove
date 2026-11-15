@@ -30,6 +30,7 @@ pub mod eval_memory;
 pub mod flow;
 pub mod help;
 pub mod hook;
+pub mod import;
 pub mod init;
 pub mod mcp;
 pub mod preview;
@@ -253,6 +254,10 @@ Install and maintenance:
                  checks the setup, read-only: one PASS, WARN, or FAIL line per check
                  (builds, daemon, modes, token, configuration directory, context,
                  hook, ledger); exits 1 when a check fails
+  import [--file <PATH>]... [--select <NUMBERS | all> [--next <TEXT>] [--dry-run]]
+                 lists the statements of CLAUDE.md, AGENTS.md, Cursor's rules, and
+                 Claude Code's auto-memory; with --select records them as open items
+                 of the current Session, each marked imported and not verified
   backup [--data-dir <PATH>] --out <DIR>
                  offline: copies the data directory, while the daemon is stopped,
                  into a new or empty directory, with SHA256SUMS; no socket, lock,

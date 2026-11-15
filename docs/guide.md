@@ -148,6 +148,36 @@ The same holds for what a test run leaves behind, such as Python's `__pycache__/
 untracked file, every fact on a run is `unconfirmed`, so list such files in `.gitignore` or in the exclude file.
 `AGENTS.md` and `.cursor/rules/memprove.mdc` are not excluded: the note is repository content and is committed.
 
+## Importing what the repository already tells agents (`memprove import`)
+
+A repository often keeps rules and memories for coding agents already: `CLAUDE.md`, `AGENTS.md`, Cursor's rules,
+Claude Code's auto-memory. `memprove import` turns them into open items of the current Session, so that the Context
+Pack carries them, without pretending that any of them is verified:
+
+```bash
+memprove import                                   # list; nothing is sent
+memprove import --select 1,3-5 --dry-run          # what would be recorded
+memprove import --select all                      # record, after begin and a run
+```
+
+Without `--file` it reads, in the Workspace root, `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`, `AGENTS.md`,
+`GEMINI.md`, `.github/copilot-instructions.md`, `.cursorrules` and `.cursor/rules/*.mdc` and `*.md` (not
+`memprove.mdc`), then Claude Code's auto-memory of the repository (`$CLAUDE_CONFIG_DIR`, else `~/.claude`, then
+`projects/<the root's path with every character other than A-Z, a-z and 0-9 as ->/memory/*.md`, `MEMORY.md` first).
+`--file <PATH>`, repeatable, reads those files instead. A statement is one list item, with its continuation lines, or
+one paragraph; front matter, headings, fenced code, HTML comments and tags, tables, rules, `@path` imports and
+memprove's own note in `AGENTS.md` are passed over, and so is a statement the listing already has. The listing is
+`<N>  <source>:<line>  <text>`, numbered for `--select`.
+
+With `--select`, the selected statements become the open items `<text> (imported from <source>:<line>; not
+verified)` of one Checkpoint of the current context, as `checkpoint create --open ...` would record them, so `begin`
+and a `memprove run` come first. The Checkpoint keeps the next action in force unless `--next` gives another (a Task
+without one needs `--next`). A statement already in force as an imported open item, from any line of any source, is
+left out and named, so importing again after editing `CLAUDE.md` records only what is new. A statement in the format
+of a memprove token, or longer than 4096 characters with its mark, is named on standard error and not imported. An
+imported open item stays an open item: to make it a fact, run the test that shows it and state the fact with
+`--supersedes <N>`.
+
 ## Unattended takeover
 
 A `claude -p` run (or another unattended client) that continues a Task reads the injected Pack, decides what to do

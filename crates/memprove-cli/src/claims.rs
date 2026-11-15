@@ -317,6 +317,22 @@ impl CapsuleClaims {
         })
     }
 
+    /// U24 (I1): the text of every open item in force, in claim order.
+    #[must_use]
+    pub fn open_items_in_force(&self) -> Vec<&str> {
+        self.claims
+            .iter()
+            .filter(|claim| claim.kind == "open_item" && claim.standing == "active")
+            .map(|claim| claim.text.as_str())
+            .collect()
+    }
+
+    /// U24 (I1): the text of the next action in force, when one is.
+    #[must_use]
+    pub fn next_action_in_force(&self) -> Option<&str> {
+        self.next_action.as_deref()
+    }
+
     /// U8 A5 (Owner O4): the claim IDs of every statement `Session number`
     /// wrote that is still in force, in claim order.
     ///
