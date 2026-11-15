@@ -2821,6 +2821,176 @@ pub fn install_trae_hooks(
     .apply(true)
 }
 
+/// The tools Claude Code's `PreToolUse` handler of `memprove policy` runs
+/// for: the shell, file reads and changes, and MCP tools.
+pub const POLICY_CLAUDE_MATCHER: &str = "Bash|Read|Write|Edit|MultiEdit|NotebookEdit|Grep|mcp__.*";
+
+/// The tools Codex's `PreToolUse` handler of `memprove policy` runs for.
+pub const POLICY_CODEX_MATCHER: &str = "Bash|apply_patch|mcp__.*";
+
+/// The events of Cursor's hooks `memprove policy` handles; `preToolUse` only
+/// for writing and deleting files ([`POLICY_CURSOR_WRITE_MATCHER`]).
+pub const POLICY_CURSOR_EVENTS: [&str; 4] = [
+    "beforeShellExecution",
+    "beforeMCPExecution",
+    "beforeReadFile",
+    "preToolUse",
+];
+
+/// The tools of Cursor's `preToolUse` the policy handler runs for.
+pub const POLICY_CURSOR_WRITE_MATCHER: &str = "Write|Delete";
+
+/// How long a client waits for the policy hook, in seconds.
+pub const POLICY_TIMEOUT_SECONDS: u64 = 10;
+
+/// The shell command of the policy hook for `client`: `'<executable>'
+/// policy hook --client <client>`.
+#[must_use]
+pub fn policy_command(executable: &str, client: &str) -> String {
+    format!("{} policy hook --client {client}", shell_word(executable))
+}
+
+/// Whether `handler` is a policy handler `memprove policy init` wrote: a
+/// command (Cursor's `type` may be left out) whose program is `memprove`
+/// (or of [`PREVIOUS_NAME`]), wherever it lives, with the words `policy
+/// hook` after it.
+fn is_own_policy_handler(handler: &JsonValue) -> bool {
+    handler
+        .get("type")
+        .is_none_or(|kind| kind.as_str() == Some("command"))
+        && handler
+            .get("command")
+            .and_then(JsonValue::as_str)
+            .and_then(first_shell_word)
+            .is_some_and(|(program, rest)| {
+                is_own_program(&program) && rest.split_whitespace().take(2).eq(["policy", "hook"])
+            })
+}
+
+/// A `PreToolUse` group for Claude Code or Codex: `matcher` and one command
+/// handler.
+fn policy_group(executable: &str, client: &str, matcher: &str) -> JsonValue {
+    let member = |name: &str, value: JsonValue| (name.to_owned(), value);
+    JsonValue::Object(vec![
+        member("matcher", JsonValue::String(matcher.to_owned())),
+        member(
+            "hooks",
+            JsonValue::Array(vec![JsonValue::Object(vec![
+                member("type", JsonValue::String("command".to_owned())),
+                member(
+                    "command",
+                    JsonValue::String(policy_command(executable, client)),
+                ),
+                member(
+                    "timeout",
+                    JsonValue::Number(POLICY_TIMEOUT_SECONDS.to_string()),
+                ),
+            ])]),
+        ),
+    ])
+}
+
+/// `memprove policy init` for Claude Code: the `PreToolUse` group of the
+/// policy hook in `settings` (`.claude/settings.local.json`), in place of
+/// every policy handler written there before; everything else is kept.
+///
+/// # Errors
+///
+/// As [`install`].
+pub fn install_policy_claude(settings: &Path, executable: &str) -> Result<Change, String> {
+    Edit::of(settings, |original| {
+        edit_event(
+            original,
+            "PreToolUse",
+            Some(policy_group(
+                executable,
+                "claude-code",
+                POLICY_CLAUDE_MATCHER,
+            )),
+            is_own_policy_handler,
+        )
+    })?
+    .apply(true)
+}
+
+/// `memprove policy init` for Codex: the `PreToolUse` group of the policy
+/// hook in `hooks_file` (`.codex/hooks.json`), as for Claude Code.
+///
+/// # Errors
+///
+/// As [`install`].
+pub fn install_policy_codex(hooks_file: &Path, executable: &str) -> Result<Change, String> {
+    Edit::of(hooks_file, |original| {
+        edit_event(
+            original,
+            "PreToolUse",
+            Some(policy_group(executable, "codex", POLICY_CODEX_MATCHER)),
+            is_own_policy_handler,
+        )
+    })?
+    .apply(true)
+}
+
+/// `hooks` (Cursor's `hooks.json`, `{}` when new) with `version` (1 when
+/// there is none) and the policy handler as the last handler of each of
+/// [`POLICY_CURSOR_EVENTS`], in place of every policy handler written there
+/// before; everything else is kept, in its order.
+fn with_cursor_policy(hooks_file: &JsonValue, executable: &str) -> Result<JsonValue, String> {
+    let JsonValue::Object(members) = hooks_file else {
+        return Err("its top level is not a JSON object".to_owned());
+    };
+    let mut members = members.clone();
+    if !members.iter().any(|(name, _)| name == "version") {
+        members.insert(0, ("version".to_owned(), JsonValue::Number("1".to_owned())));
+    }
+    let mut hooks = match members.iter().find(|(name, _)| name == "hooks") {
+        None => Vec::new(),
+        Some((_, JsonValue::Object(hooks))) => hooks.clone(),
+        Some(_) => return Err("its \"hooks\" is not a JSON object".to_owned()),
+    };
+    for event in POLICY_CURSOR_EVENTS {
+        let mut handlers = match hooks.iter().find(|(name, _)| name == event) {
+            None => Vec::new(),
+            Some((_, JsonValue::Array(handlers))) => handlers.clone(),
+            Some(_) => return Err(format!("its \"hooks\".\"{event}\" is not a JSON array")),
+        };
+        handlers.retain(|handler| !is_own_policy_handler(handler));
+        let mut handler = vec![
+            (
+                "command".to_owned(),
+                JsonValue::String(policy_command(executable, "cursor")),
+            ),
+            (
+                "timeout".to_owned(),
+                JsonValue::Number(POLICY_TIMEOUT_SECONDS.to_string()),
+            ),
+        ];
+        if event == "preToolUse" {
+            handler.push((
+                "matcher".to_owned(),
+                JsonValue::String(POLICY_CURSOR_WRITE_MATCHER.to_owned()),
+            ));
+        }
+        handlers.push(JsonValue::Object(handler));
+        set(&mut hooks, event, JsonValue::Array(handlers));
+    }
+    set(&mut members, "hooks", JsonValue::Object(hooks));
+    Ok(JsonValue::Object(members))
+}
+
+/// `memprove policy init` for Cursor: the policy handlers in `hooks_file`
+/// (`.cursor/hooks.json`), as [`with_cursor_policy`] puts them.
+///
+/// # Errors
+///
+/// As [`install`].
+pub fn install_policy_cursor(hooks_file: &Path, executable: &str) -> Result<Change, String> {
+    Edit::of(hooks_file, |original| {
+        with_cursor_policy(original, executable)
+    })?
+    .apply(true)
+}
+
 /// `hook uninstall`: removes the handlers `install` wrote from the settings
 /// file `settings`, and nothing else; U5 P3: with them
 /// `env.MEMPROVE_CONFIG_DIR` and an `mcpServers.memprove` it wrote
@@ -3229,6 +3399,144 @@ mod tests {
                 "--config-dir",
                 "/b/config"
             ]]
+        );
+    }
+
+    /// The commands of the handlers of `event` in a settings or hooks file:
+    /// Claude Code's and Codex's groups, or Cursor's flat list.
+    fn policy_commands(value: &JsonValue, event: &str) -> Vec<String> {
+        let mut commands = Vec::new();
+        let entries = value
+            .get("hooks")
+            .and_then(|hooks| hooks.get(event))
+            .and_then(JsonValue::as_array)
+            .unwrap_or_default();
+        for entry in entries {
+            let handlers = entry
+                .get("hooks")
+                .and_then(JsonValue::as_array)
+                .map_or_else(|| vec![entry.clone()], <[JsonValue]>::to_vec);
+            for handler in handlers {
+                if let Some(command) = handler.get("command").and_then(JsonValue::as_str) {
+                    commands.push(command.to_owned());
+                }
+            }
+        }
+        commands
+    }
+
+    /// `memprove policy init` for Claude Code and Codex: one `PreToolUse`
+    /// group with the policy handler, after the groups that were there; a
+    /// second install changes nothing, one from another path replaces the
+    /// handler, and the session-start handler and other hooks stay.
+    #[test]
+    fn the_policy_hook_is_one_pre_tool_use_group_and_keeps_the_rest() {
+        let base = tempfile::tempdir().unwrap();
+        for (path, install, client, matcher) in [
+            (
+                base.path().join(".claude/settings.local.json"),
+                install_policy_claude as fn(&Path, &str) -> Result<Change, String>,
+                "claude-code",
+                POLICY_CLAUDE_MATCHER,
+            ),
+            (
+                base.path().join(".codex/hooks.json"),
+                install_policy_codex,
+                "codex",
+                POLICY_CODEX_MATCHER,
+            ),
+        ] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(
+                &path,
+                r#"{"permissions":{"allow":["Bash(ls:*)"]},"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"'/a/memprove' hook session-start"}]}],"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"./mine.sh"}]}]}}"#,
+            )
+            .unwrap();
+            assert!(matches!(
+                install(&path, "/a/memprove").unwrap(),
+                Change::Written(_)
+            ));
+            assert!(matches!(
+                install(&path, "/a/memprove").unwrap(),
+                Change::Unchanged(_)
+            ));
+            assert!(matches!(
+                install(&path, "/b/memprove").unwrap(),
+                Change::Written(_)
+            ));
+            let value = parse_strict(&fs::read_to_string(&path).unwrap()).unwrap();
+            assert!(value.get("permissions").is_some());
+            assert_eq!(
+                policy_commands(&value, "SessionStart"),
+                ["'/a/memprove' hook session-start"]
+            );
+            assert_eq!(
+                policy_commands(&value, "PreToolUse"),
+                [
+                    "./mine.sh".to_owned(),
+                    format!("'/b/memprove' policy hook --client {client}")
+                ]
+            );
+            let groups = value
+                .get("hooks")
+                .and_then(|hooks| hooks.get("PreToolUse"))
+                .and_then(JsonValue::as_array)
+                .unwrap();
+            assert_eq!(
+                groups[1].get("matcher").and_then(JsonValue::as_str),
+                Some(matcher)
+            );
+        }
+    }
+
+    /// `memprove policy init` for Cursor: `version` 1 when new, one policy
+    /// handler last in each of its four events (`preToolUse` for writes and
+    /// deletes only); a handler of someone else stays before it, and the
+    /// session-start handler is kept.
+    #[test]
+    fn the_cursor_policy_hook_is_last_in_each_event_and_keeps_the_rest() {
+        let base = tempfile::tempdir().unwrap();
+        let path = base.path().join(".cursor/hooks.json");
+        assert!(matches!(
+            install_policy_cursor(&path, "/a/memprove").unwrap(),
+            Change::Written(_)
+        ));
+        let first = parse_strict(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            first.get("version"),
+            Some(&JsonValue::Number("1".to_owned()))
+        );
+        fs::write(
+            &path,
+            r#"{"version":1,"hooks":{"sessionStart":[{"command":"'/a/memprove' hook session-start --client cursor"}],"beforeShellExecution":[{"command":"'/old/memprove' policy hook --client cursor"},{"command":"./mine.sh"}]}}"#,
+        )
+        .unwrap();
+        install_policy_cursor(&path, "/a/memprove").unwrap();
+        assert!(matches!(
+            install_policy_cursor(&path, "/a/memprove").unwrap(),
+            Change::Unchanged(_)
+        ));
+        let value = parse_strict(&fs::read_to_string(&path).unwrap()).unwrap();
+        let own = "'/a/memprove' policy hook --client cursor".to_owned();
+        assert_eq!(
+            policy_commands(&value, "sessionStart"),
+            ["'/a/memprove' hook session-start --client cursor"]
+        );
+        assert_eq!(
+            policy_commands(&value, "beforeShellExecution"),
+            ["./mine.sh".to_owned(), own.clone()]
+        );
+        for event in POLICY_CURSOR_EVENTS {
+            assert_eq!(policy_commands(&value, event).last(), Some(&own), "{event}");
+        }
+        let pre_tool_use = value
+            .get("hooks")
+            .and_then(|hooks| hooks.get("preToolUse"))
+            .and_then(JsonValue::as_array)
+            .unwrap();
+        assert_eq!(
+            pre_tool_use[0].get("matcher").and_then(JsonValue::as_str),
+            Some(POLICY_CURSOR_WRITE_MATCHER)
         );
     }
 

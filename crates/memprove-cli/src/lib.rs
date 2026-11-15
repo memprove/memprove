@@ -33,6 +33,7 @@ pub mod hook;
 pub mod import;
 pub mod init;
 pub mod mcp;
+pub mod policy_install;
 pub mod preview;
 pub mod resume;
 pub mod run;
@@ -241,6 +242,13 @@ Completion check (memprove verify --help):
                  to the protected paths (the tests) is left to a person; the
                  contract is read from the base commit; `hook` is the Claude Code
                  Stop hook that keeps an agent working while a check fails
+
+Agent tool policy (memprove policy --help):
+  policy init | check | test | log | hook
+                 one set of tool rules in .memprove/policy.rules for Claude Code,
+                 Codex and Cursor: before each tool call their hook refuses the
+                 call or has a person approve it when a rule says so; decided
+                 locally from the call's text; `test` runs the file's expect lines
 
 Install and maintenance:
   init [--client <claude-code|codex|cursor|trae>]... [--operator-token <FILE>] [--allow-tools] [--dry-run]
