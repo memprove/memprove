@@ -24,7 +24,7 @@ use memprove_cli::{
         self, BeginRequest, BeginStop, Daemon, DraftStop, Failed, Resolved, Saver, Socket, Unmoved,
         keyed, member, number,
     },
-    help, hook, hook_session_start_requested, mcp, mcp_requested, mcp_serve_config_dir,
+    help, hook, hook_session_start_requested, import, mcp, mcp_requested, mcp_serve_config_dir,
     parse_args_deferring, preview, resolve_token, resume, run, usage_hint,
 };
 use memprove_domain::PackError;
@@ -87,12 +87,261 @@ fn verify(args: &[std::ffi::OsString]) -> Option<ExitCode> {
     Some(ExitCode::from(memprove_verify::cli::main(&words)))
 }
 
+/// U24 (I1): `memprove import ...`, read here; the parser answers only
+/// `import --help`. `None` for every other command.
+fn import(args: &[std::ffi::OsString]) -> Option<ExitCode> {
+    let (globals, rest) = import::requested(args)?;
+    if rest.iter().any(|word| word == "--help" || word == "-h") {
+        return None;
+    }
+    let mut words = globals;
+    words.extend(rest.iter().cloned());
+    Some(import_statements(&words))
+}
+
+/// How many characters of a statement the listing of `import` shows.
+const IMPORT_LISTING_WIDTH: usize = 100;
+
+/// A usage error of `import`: exit 2.
+fn import_usage(error: &str) -> ExitCode {
+    eprintln!("memprove: error: {error}\nmemprove: see `memprove import --help`");
+    ExitCode::from(2)
+}
+
+/// U24 (I1): lists the statements of the sources; with `--select`, records
+/// the selected ones.
+fn import_statements(rest: &[std::ffi::OsString]) -> ExitCode {
+    let spec = match import::parse_args(rest) {
+        Ok(spec) => spec,
+        Err(error) => return import_usage(&error),
+    };
+    let cwd = match std::env::current_dir() {
+        Ok(cwd) => cwd,
+        Err(error) => {
+            eprintln!("memprove: error: the current directory cannot be read: {error}");
+            return ExitCode::from(1);
+        }
+    };
+    let root = workspace_root(&cwd).unwrap_or_else(|_| cwd.clone());
+    let sources = if spec.files.is_empty() {
+        let claude = import::claude_config_dir(
+            std::env::var_os("CLAUDE_CONFIG_DIR"),
+            std::env::var_os("HOME"),
+        );
+        import::default_sources(&root, claude.as_deref())
+    } else {
+        import::given_sources(&spec.files, &cwd, &root)
+    };
+    let found = import::collect(&sources);
+    for (name, error) in &found.unreadable {
+        eprintln!("memprove: error: {name} cannot be read: {error}");
+    }
+    if !found.unreadable.is_empty() {
+        return ExitCode::from(1);
+    }
+    for passed in &found.passed {
+        eprintln!(
+            "memprove: {}:{} is not imported: {}",
+            passed.source, passed.line, passed.reason
+        );
+    }
+    if found.candidates.is_empty() {
+        if found.read.is_empty() {
+            eprintln!(
+                "memprove: nothing to import: this repository has none of {}, {}/, and \
+                 Claude Code's auto-memory",
+                import::DEFAULT_FILES.join(", "),
+                import::CURSOR_RULES_DIR
+            );
+        } else {
+            eprintln!(
+                "memprove: nothing to import: {} hold no statement",
+                found.read.join(", ")
+            );
+        }
+        return ExitCode::SUCCESS;
+    }
+    let Some(select) = spec.select.as_deref() else {
+        for (index, candidate) in found.candidates.iter().enumerate() {
+            println!(
+                "{}",
+                import::listing_line(index + 1, candidate, IMPORT_LISTING_WIDTH)
+            );
+        }
+        eprintln!(
+            "memprove: {} in {}; nothing was recorded. `memprove import --select all` (or \
+             --select 1,3-5) records them as open items of the current Session, each marked \
+             imported and not verified",
+            import::count(found.candidates.len(), "statement"),
+            found.read.join(", ")
+        );
+        return ExitCode::SUCCESS;
+    };
+    let chosen: Vec<&import::Candidate> = match import::selection(select, found.candidates.len()) {
+        Ok(indexes) => indexes
+            .iter()
+            .map(|index| &found.candidates[*index])
+            .collect(),
+        Err(error) => return import_usage(&error),
+    };
+    record_imported(&chosen, &spec)
+}
+
+/// The arguments of the `checkpoint create` that records `items`, after the
+/// global options `globals`.
+fn import_checkpoint(
+    globals: &[std::ffi::OsString],
+    items: &[&import::Candidate],
+    next: &str,
+) -> Vec<std::ffi::OsString> {
+    let mut args = globals.to_vec();
+    args.extend(["checkpoint".into(), "create".into()]);
+    for item in items {
+        args.push("--open".into());
+        args.push(item.recorded().into());
+    }
+    args.push("--next".into());
+    args.push(next.into());
+    args
+}
+
+/// U24 (I1): the claims of the Task Capsule of the Task the `checkpoint
+/// create` of `invocation` writes to, read with its socket and token; the
+/// exit code when they cannot be read.
+fn imported_task_claims(invocation: &Invocation) -> Result<claims::CapsuleClaims, ExitCode> {
+    let Invocation::Call {
+        socket,
+        token_file,
+        request,
+        ..
+    } = invocation
+    else {
+        unreachable!("checkpoint create is a call");
+    };
+    let Some(task_id) = request
+        .pending
+        .as_ref()
+        .map(|draft| draft.task_id().to_owned())
+        .or_else(|| {
+            request
+                .body
+                .as_deref()
+                .and_then(|body| member(body, &["task_id"]))
+        })
+    else {
+        unreachable!("checkpoint create with flags names its Task");
+    };
+    let token = match token_of(token_file.as_deref()) {
+        Ok(token) => token,
+        Err(error) => {
+            eprintln!("memprove: error: {error}");
+            return Err(ExitCode::from(2));
+        }
+    };
+    let daemon = Socket {
+        socket,
+        token: token.as_deref(),
+    };
+    let capsule = Request::bare(
+        OperationId::GetTaskCapsule,
+        format!("/v1/tasks/{task_id}/recovery-capsule"),
+    );
+    let claims = match daemon.exchange(&capsule) {
+        Ok(reply) => match claims::CapsuleClaims::from_body(&reply.body) {
+            Ok(claims) => claims,
+            Err(error) => {
+                eprintln!("memprove: error: {error}; nothing was sent");
+                return Err(ExitCode::from(1));
+            }
+        },
+        Err(failed) => return Err(ExitCode::from(failed.code())),
+    };
+    Ok(claims)
+}
+
+/// U24 (I1): records `chosen` by one `checkpoint create` of the current
+/// context, without the statements in force already as imported open
+/// items; `--next` defaults to the next action in force. With `--dry-run`,
+/// prints the open items instead and sends nothing.
+fn record_imported(chosen: &[&import::Candidate], spec: &import::ImportSpec) -> ExitCode {
+    let (store, lookup) = startup_context();
+    // The Task, socket, and token of the current context, as
+    // `checkpoint create` resolves them.
+    let next = spec.next.as_deref();
+    let probe = import_checkpoint(&spec.globals, chosen, next.unwrap_or("-"));
+    let invocation = match parse(&probe, store.as_ref(), &lookup) {
+        Ok(invocation) => invocation,
+        Err(error) => {
+            eprintln!(
+                "memprove: error: {error}\nmemprove: `import --select` records open items in the \
+                 current Session, as `checkpoint create` does; run `memprove begin` and \
+                 `memprove run` first"
+            );
+            return ExitCode::from(2);
+        }
+    };
+    let claims = match imported_task_claims(&invocation) {
+        Ok(claims) => claims,
+        Err(code) => return code,
+    };
+    let open_items = claims.open_items_in_force();
+    let (known, new): (Vec<&import::Candidate>, Vec<&import::Candidate>) = chosen
+        .iter()
+        .copied()
+        .partition(|candidate| candidate.in_force(&open_items));
+    for item in &known {
+        eprintln!(
+            "memprove: {}:{} is in force already as an imported open item; it is left out",
+            item.source, item.line
+        );
+    }
+    if new.is_empty() {
+        eprintln!(
+            "memprove: nothing to import: every selected statement is in force already; \
+             nothing was sent"
+        );
+        return ExitCode::SUCCESS;
+    }
+    let Some(next) = next.or_else(|| claims.next_action_in_force()) else {
+        return import_usage(
+            "the Task has no next action in force; give --next <TEXT>, the next action the \
+             Checkpoint records with the imported open items",
+        );
+    };
+    if spec.dry_run {
+        for item in &new {
+            println!("{}", item.recorded());
+        }
+        eprintln!(
+            "memprove: --dry-run: nothing was sent; without it one Checkpoint of the current \
+             Session records {}, with the next action {next:?}",
+            import::count(new.len(), "open item")
+        );
+        return ExitCode::SUCCESS;
+    }
+    eprintln!(
+        "memprove: importing {} as open items, not verified",
+        import::count(new.len(), "statement")
+    );
+    let args = import_checkpoint(&spec.globals, &new, next);
+    match parse(&args, store.as_ref(), &lookup) {
+        Ok(invocation) => dispatch(invocation, store.as_ref(), &lookup, &args),
+        Err(error) => {
+            eprintln!("memprove: error: {error}");
+            ExitCode::from(2)
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     if let Some(code) = before_the_parser(&args) {
         return code;
     }
     if let Some(code) = eval(&args).or_else(|| verify(&args)) {
+        return code;
+    }
+    if let Some(code) = import(&args) {
         return code;
     }
     // P4-G (ADR 0014 E7.3): an `mcp` command reads no context and warns
@@ -111,6 +360,16 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    dispatch(invocation, store.as_ref(), &lookup, &args)
+}
+
+/// Runs a parsed command line (`args`, for its usage hints).
+fn dispatch(
+    invocation: Invocation,
+    store: Option<&ContextStore>,
+    lookup: &ContextLookup,
+    args: &[std::ffi::OsString],
+) -> ExitCode {
     let (socket, token_file) = match &invocation {
         Invocation::Help => {
             println!("{USAGE}");
@@ -120,8 +379,8 @@ fn main() -> ExitCode {
             println!("{VERSION_LINE}");
             return ExitCode::SUCCESS;
         }
-        Invocation::Doctor(spec) => return doctor(spec, store.as_ref(), &lookup),
-        Invocation::Init(spec) => return init(spec, store.as_ref(), &lookup),
+        Invocation::Doctor(spec) => return doctor(spec, store, lookup),
+        Invocation::Init(spec) => return init(spec, store, lookup),
         Invocation::Backup { data_dir, out } => {
             return offline("backup", out, memprove_cli::backup::backup(data_dir, out));
         }
@@ -165,17 +424,14 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    if let Some(code) = refuse_before_sending(&invocation, token.as_deref(), &args) {
+    if let Some(code) = refuse_before_sending(&invocation, token.as_deref(), args) {
         return code;
     }
-    let saver = Saver {
-        store: store.as_ref(),
-        lookup: &lookup,
-    };
+    let saver = Saver { store, lookup };
     match invocation {
         Invocation::Call {
             request, follow, ..
-        } => call(&socket, request, token.as_deref(), &follow, &saver, &args),
+        } => call(&socket, request, token.as_deref(), &follow, &saver, args),
         Invocation::Run { spec, .. } => run_and_record(&socket, &spec, token.as_deref(), &saver),
         Invocation::Begin { spec, .. } => begin(&socket, &spec, token.as_deref(), &saver),
         Invocation::Help

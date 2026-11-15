@@ -73,6 +73,12 @@ it.
    Running it again changes nothing. No token is shown or written into the
    repository.
 
+   Rules your agents already have in `CLAUDE.md`, `AGENTS.md`, Cursor's
+   rules or Claude Code's auto-memory come along with `memprove import`
+   (it lists them) and `memprove import --select all` (after the first
+   `begin` and `run`): each becomes an open item marked as imported and not
+   verified.
+
 Or let your coding agent do both steps, and set up `memprove eval` and
 `memprove policy` too: add the memprove plugin
 (`/plugin install memprove --marketplace memprove/memprove` in Claude Code;

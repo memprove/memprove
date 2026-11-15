@@ -1298,6 +1298,48 @@ pub const MAINTENANCE_COMMANDS: &[CommandHelp] = &[
         exits: Exits::Doctor,
     },
     CommandHelp {
+        name: "import",
+        summary: "list the statements of CLAUDE.md, AGENTS.md, Cursor's rules, and Claude Code's auto-memory; with --select, record them as open items, each marked imported and not verified",
+        usage: &[
+            "import [--file <PATH>]... [--select <NUMBERS | all> [--next <TEXT>] [--dry-run]]",
+        ],
+        calls: Some(
+            "none without --select; with it getTaskCapsule, then createCheckpoint as \
+             `checkpoint create --open ... --next ...` of the current context",
+        ),
+        options: &[
+            (
+                "--file <PATH>",
+                "a file to read, repeatable; without it: CLAUDE.md, CLAUDE.local.md, .claude/CLAUDE.md, AGENTS.md, GEMINI.md, .github/copilot-instructions.md, .cursorrules, and .cursor/rules/*.mdc and *.md of the Workspace root (not memprove's own rule), then Claude Code's auto-memory of this repository ($CLAUDE_CONFIG_DIR or ~/.claude, projects/<root with every character other than A-Z, a-z, 0-9 as ->/memory/*.md)",
+            ),
+            (
+                "--select <NUMBERS | all>",
+                "the statements to record, by the numbers the listing gives them with the same --file options: `all`, or numbers and ranges such as 1,3,5-7",
+            ),
+            (
+                "--next <TEXT>",
+                "the next action the Checkpoint records; default: the next action in force",
+            ),
+            (
+                "--dry-run",
+                "print the open items that would be recorded (after reading the Task Capsule); send nothing",
+            ),
+        ],
+        notes: "A statement is one list item (with its continuation lines) or one paragraph;\n\
+                front matter, headings, fenced code, HTML comments and tags, tables, rules,\n\
+                Claude Code's @path imports, and memprove's own note in AGENTS.md are passed\n\
+                over, and so is a statement seen earlier in the same listing. Without --select\n\
+                nothing is sent: each statement is listed as `<N>  <source>:<line>  <text>`. With\n\
+                it, each selected statement becomes the open item `<text> (imported from\n\
+                <source>:<line>; not verified)` of one Checkpoint of the current Session (so\n\
+                `memprove begin` and a `memprove run` come first, as for `checkpoint create`); a\n\
+                statement that is in force already as an imported open item, from any line, is\n\
+                left out, so a second import records nothing twice. A statement in the format of\n\
+                a memprove token, or longer than a statement may be, is named and not imported.\n\
+                Imported open items are not facts: none is verified until a test run supports it.",
+        exits: Exits::Claims,
+    },
+    CommandHelp {
         name: "backup",
         summary: "copy the data directory while the daemon is stopped, with SHA256SUMS",
         usage: &["backup [--data-dir <PATH>] --out <DIR>"],
