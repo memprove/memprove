@@ -641,6 +641,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "memprove-policy"
+version = "0.2.1"
+dependencies = [
+ "memprove-protocol",
+ "tempfile",
+]
+
+[[package]]
 name = "memprove-protocol"
 version = "0.2.1"
 
