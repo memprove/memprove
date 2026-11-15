@@ -161,6 +161,26 @@ Every run writes a receipt. `memprove verify init --hook` adds Claude
 Code hooks that verify each time the agent finishes and keep it working
 while a check fails; `docs/verify.md` has the rest.
 
+## One set of tool rules for every agent
+
+`memprove policy` puts the rules for an agent's tool calls in one committed
+file, `.memprove/policy.rules`, and has Claude Code, Codex and Cursor check
+each call against it before it runs, on the developer's machine:
+
+```text
+deny  Bash(git push *--force*)  -- push a new branch instead
+ask   Bash(git push *)
+deny  Read(.env*)
+deny  Edit(db/migrations/**)
+expect deny Bash(cd app && git push origin main --force)
+```
+
+The hook reads a command line as a shell would (`&&`, pipes, `bash -c`,
+`$(...)`, `sudo`, `xargs`, `cat .env`), the first matching rule decides,
+and `memprove policy test` runs the `expect` lines in CI.
+`memprove policy init` writes a starter file and each client's hook;
+`docs/policy.md` has the rest.
+
 ## Status
 
 memprove 0.2.1 came out on 2026-11-16

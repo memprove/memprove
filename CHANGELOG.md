@@ -65,6 +65,24 @@ https://github.com/memprove/memprove/releases.
   `.git/info/exclude`, and doctor's `client-hooks` line checks the hook.
   TRAE runs it once you trust the folder and enable the hook; `init` says
   so and turns nothing on itself.
+- `memprove policy` (crate `memprove-policy`): one set of tool rules for
+  Claude Code, Codex and Cursor in `.memprove/policy.rules`
+  (`<deny|ask|allow> <Bash|Read|Edit|Mcp>(<pattern>) [-- reason]`, the
+  first matching rule deciding, a command line getting the strictest
+  decision of its commands, and `expect` lines as tests). `policy hook
+  --client <c>` reads each client's tool-call hook input and answers in
+  its JSON; shell command lines are read without running them (separators,
+  quotes, heredocs, substitutions, wrappers such as `sudo` and `xargs`,
+  `bash -c`, `find -exec`, `cd`), and their reads and writes are checked
+  against `Read` and `Edit` rules. `ask` refuses where the client cannot
+  ask from a hook (Codex; Cursor's file reads and writes). Changes to the
+  policy file and the clients' hook settings always need a person; a
+  policy that does not parse makes every call need one. `policy init`
+  writes a starter policy and the hooks (`.claude/settings.local.json`,
+  `.codex/hooks.json`, `.cursor/hooks.json`, kept out of Git), `policy
+  check` decides one call and names the deciding line, `policy test` runs
+  the `expect` lines, and `policy log` shows the refusals and approvals
+  asked for, logged in `<git common dir>/memprove-policy/log.jsonl`.
 
 ### Fixed
 

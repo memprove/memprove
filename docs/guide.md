@@ -676,6 +676,16 @@ by the check's exit code alone. `memprove eval init` writes a first task, a CI w
 give a new session, and reports the change in pass rate task by task; `--memory pack` gives a single run that Pack.
 `memprove eval --help` lists the commands; `docs/eval.md` is the manual.
 
+## Tool rules for every agent (`memprove policy`)
+
+`.memprove/policy.rules`, committed, holds rules such as `deny Bash(git push *--force*)`, `ask Bash(git push *)`,
+`deny Read(.env*)` and `deny Edit(db/migrations/**)`; before each tool call, Claude Code, Codex and Cursor run
+`memprove policy hook`, and the first rule that matches decides. When a call is refused, the reason names the line of
+the policy that refused it: do not try the same thing another way; tell the user, who can run it or change the policy.
+An agent's change to the policy file or to a client's hook settings always needs a person. `memprove policy check
+'Bash(<command>)'` shows which line decides a call before you make it, `memprove policy test` runs the file's `expect`
+lines, and `memprove policy init` writes a starter file and the hooks. `docs/policy.md` is the manual.
+
 ## Known limits
 
 - The case count of a run comes from the command's output text (`cargo test` result lines, pytest's summary or
