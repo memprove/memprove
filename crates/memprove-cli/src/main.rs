@@ -87,6 +87,25 @@ fn verify(args: &[std::ffi::OsString]) -> Option<ExitCode> {
     Some(ExitCode::from(memprove_verify::cli::main(&words)))
 }
 
+/// `memprove policy ...` is parsed and run by the `memprove-policy` crate,
+/// which reads no token and calls no daemon; the CLI gives it the installer
+/// of the clients' hook settings. `None` for every other command.
+fn policy(args: &[std::ffi::OsString]) -> Option<ExitCode> {
+    let (first, rest) = args.split_first()?;
+    if first != "policy" {
+        return None;
+    }
+    let words: Vec<String> = rest
+        .iter()
+        .map(|word| word.to_string_lossy().into_owned())
+        .collect();
+    let installer = memprove_cli::policy_install::PolicyInstaller;
+    Some(ExitCode::from(memprove_policy::cli::main(
+        &words,
+        Some(&installer),
+    )))
+}
+
 /// U24 (I1): `memprove import ...`, read here; the parser answers only
 /// `import --help`. `None` for every other command.
 fn import(args: &[std::ffi::OsString]) -> Option<ExitCode> {
@@ -335,6 +354,9 @@ fn record_imported(chosen: &[&import::Candidate], spec: &import::ImportSpec) -> 
 
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if let Some(code) = policy(&args) {
+        return code;
+    }
     if let Some(code) = before_the_parser(&args) {
         return code;
     }

@@ -587,6 +587,7 @@ version = "0.2.1"
 dependencies = [
  "memprove-domain",
  "memprove-eval",
+ "memprove-policy",
  "memprove-protocol",
  "memprove-store-sqlite",
  "memprove-verify",
