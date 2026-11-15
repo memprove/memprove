@@ -156,7 +156,7 @@ fn u8_k1_mcp_serve_names_the_real_reason() {
 fn u8_k1_the_helps_match_the_commands() {
     let general = text(&run(&["--help"], "").stdout);
     for line in [
-        "\n  hook session-start [--config-dir <DIR>]\n",
+        "\n  hook session-start [--client cursor] [--config-dir <DIR>]\n",
         "\n  mcp serve [--config-dir <DIR>]\n",
     ] {
         assert!(general.contains(line), "{line:?} is not in:\n{general}");

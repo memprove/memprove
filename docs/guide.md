@@ -62,11 +62,15 @@ memprove init --client claude-code --client codex --client cursor --dry-run
 
 `init` registers the Project with the operator's token (a repository already registered gets its Project back) and
 records it for the first `memprove begin` there (which then needs no `--project`), adds `.claude/settings.local.json`
-and `.mcp.json` (and Cursor's `.cursor/mcp.json` and `.cursor/rules/memprove.mdc`) to `.git/info/exclude`, runs `hook
-install` for Claude Code (with `--allow-tools`, `hook install --allow-tools`; without it the three rules are printed,
-not written), writes `[mcp_servers.memprove]` into Codex's `config.toml` (`$CODEX_HOME`, else `~/.codex`) and a short
-note into `AGENTS.md` (repository content: commit it), writes `mcpServers.memprove` into `.cursor/mcp.json` and the
-same note as an always-applied Cursor rule, and ends with `doctor`. Every file keeps its other content; run again, it
+and `.mcp.json` (and Codex's `.codex/hooks.json`; Cursor's `.cursor/mcp.json`, `.cursor/rules/memprove.mdc` and
+`.cursor/hooks.json`) to `.git/info/exclude`, runs `hook install` for Claude Code (with `--allow-tools`, `hook install
+--allow-tools`; without it the three rules are printed, not written), writes `[mcp_servers.memprove]` into Codex's
+`config.toml` (`$CODEX_HOME`, else `~/.codex`), Codex's SessionStart hook into `.codex/hooks.json` and a short note
+into `AGENTS.md` (repository content: commit it), writes `mcpServers.memprove` into `.cursor/mcp.json`, Cursor's
+sessionStart hook into `.cursor/hooks.json` and the same note as an always-applied Cursor rule, and ends with
+`doctor`. Codex runs a project's hooks only in a project you trust, and a new or changed hook only after you approve
+it in `/hooks`; `init` says so and trusts nothing for you. Until then, and in Cursor's Agents Window, which drops the
+context of a `sessionStart` hook, the note tells the agent to read the Pack through the MCP tool `pack`. Every file keeps its other content; run again, it
 changes nothing (`already as asked`). What `init` wrote under the previous name `continuity` is replaced (the
 `AGENTS.md` note, the Codex table, the Claude Code entries), and an unedited `.cursor/rules/continuity.mdc` is
 removed. Neither token is printed. Before the first `begin`, `doctor` warns and exits 0: its `workspace` line says the
@@ -411,6 +415,18 @@ session's context names one, the hook prints only a statement that names the Tas
 context names one, the hook goes on to the only Task in progress in this Workspace. With no Task to choose it prints
 one statement that says so and names the configuration directory it used.
 
+**Codex and Cursor.** `init` writes the same handler for Codex into `.codex/hooks.json` as a shell command,
+`'<path>' hook session-start --config-dir '<config>'` (a `SessionStart` group with no matcher, timeout 10 seconds,
+`additionalContextLimit` 0 so that Codex gives the model the whole output instead of a file past about 2,500
+tokens). Codex sends the members Claude Code sends and reads plain standard output as context, so the opening and the
+Pack are the same bytes. For Cursor it writes `'<path>' hook session-start --client cursor --config-dir '<config>'`
+into `hooks.sessionStart` of `.cursor/hooks.json`: with `--client cursor` the hook reads Cursor's input (the client
+session from `session_id`, else `conversation_id`; the Workspace from the first of `workspace_roots`, else
+`CURSOR_PROJECT_DIR`, else the current directory; the source `startup`) and prints the same text as one line of JSON,
+`{"additional_context": "<text>"}`. Cursor also runs the hooks of `.claude/settings.local.json`; the Claude Code
+handler prints nothing for an input that names `cursor_version`, so the Pack is injected once. Neither client sets
+`CLAUDE_ENV_FILE`, so the hook exports no client session there and the directory's context is the one commands use.
+
 **The hook's time limit.** The hook gives itself 8 seconds to read the Pack, within the handler's own `timeout` of 10
 seconds that `hook install` writes, so that Claude Code never cuts it off first. When the daemon has not answered by
 then, it stops waiting, prints only
@@ -619,6 +635,9 @@ give a new session, and reports the change in pass rate task by task; `--memory 
 - A fact's verdict compares the repository state the daemon can observe: tracked files, the index, HEAD and the
   branch. Ignored files, environment variables and permission bits other than the executable bit are not part of the
   state.
+- The Codex and Cursor hooks are written but not run by `init`: Codex runs one only after you trust the project and
+  approve the hook in `/hooks`, and Cursor's Agents Window drops a `sessionStart` hook's context (Cursor's bug; its
+  editor panel and its CLI take it). The note in `AGENTS.md` and the Cursor rule cover both cases.
 - `memprove eval` gives the agent a Pack only with `--memory pack` (or in the second run of `eval ab`): a trial
   worktree has no memprove context of its own, and the agent's `MEMPROVE_CONFIG_DIR` is an empty directory. The
   Pack is read once when the run starts and is given as text ahead of the prompt, not through the agent's own hook.
