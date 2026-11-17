@@ -442,6 +442,7 @@ fn in_worktree(
         timeout: task.agent_timeout,
         log_dir,
         env: &context.agent_env,
+        pass_env: &context.options.agent.pass_env,
     });
     let failed_to_start = matches!(outcome.end, AgentEnd::FailedToStart(_));
     if let AgentEnd::FailedToStart(detail) = &outcome.end {
@@ -504,6 +505,7 @@ fn command(
         cwd,
         env,
         env_remove: &scrubbed,
+        clear_env: false,
         stdout: log_dir.join(format!("{stem}.out")),
         stderr: log_dir.join(format!("{stem}.err")),
         timeout: spec.timeout,

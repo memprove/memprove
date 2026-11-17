@@ -39,6 +39,7 @@ fn spec(kind: AgentKind, model: Option<&str>, command: &[&str], extra: &[&str]) 
         model: model.map(str::to_owned),
         command: strings(command),
         extra_args: strings(extra),
+        pass_env: Vec::new(),
     }
 }
 
@@ -63,12 +64,24 @@ impl Trial {
     }
 
     fn run(&self, agent: &dyn Agent, prompt: &str, timeout: Duration) -> AgentOutcome {
+        self.run_passing(agent, prompt, timeout, &[])
+    }
+
+    /// As [`Trial::run`], the agent also inheriting `pass_env`.
+    fn run_passing(
+        &self,
+        agent: &dyn Agent,
+        prompt: &str,
+        timeout: Duration,
+        pass_env: &[String],
+    ) -> AgentOutcome {
         agent.run(&AgentRequest {
             workdir: &self.work,
             prompt,
             timeout,
             log_dir: &self.log,
             env: &[],
+            pass_env,
         })
     }
 
@@ -442,6 +455,22 @@ fn command_ended_by_a_signal_is_signaled() {
 /// starts.
 const CHILD: &str = "U23_W2_ENV_CHILD";
 
+/// Variables of a calling Claude Code session (and other credentials) that
+/// are not on the agent's list, so never reach it (U23-F3).
+const CALLER_ENV: &[&str] = &[
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_SESSION_INGRESS_TOKEN_FILE",
+    "CLAUDE_CODE_USER_EMAIL",
+    "CLAUDE_CODE_ACCOUNT_UUID",
+    "CLAUDE_CODE_ORGANIZATION_UUID",
+    "CLAUDE_CODE_REMOTE",
+    "CLAUDE_CODE_REMOTE_SDK_URL",
+    "MEMPROVE_DATA_DIR",
+    "SSH_AUTH_SOCK",
+    "GITHUB_TOKEN",
+];
+
 /// The environment is the process's own, so the test runs itself again as
 /// a child with the variables set (setting them here would need `unsafe`).
 #[test]
@@ -458,9 +487,10 @@ fn the_environment_names_the_programs_and_drops_the_callers_session() {
             .env(CHILD, "1")
             .env(CLAUDE_PROGRAM_ENV, fixture("claude"))
             .env(CODEX_PROGRAM_ENV, fixture("codex"))
-            .env("MEMPROVE_DATA_DIR", "/kept/data")
+            .env("ANTHROPIC_API_KEY", "the-provider's")
+            .env("LC_ALL", "C")
             .env("U23_W2_KEEP", "kept");
-        for name in REMOVED_ENV {
+        for name in REMOVED_ENV.iter().chain(CALLER_ENV) {
             child.env(name, "the-caller's");
         }
         let output = child.output().expect("runs");
@@ -472,24 +502,32 @@ fn the_environment_names_the_programs_and_drops_the_callers_session() {
         );
         return;
     }
+    let keep = ["U23_W2_KEEP".to_owned()];
     for kind in [AgentKind::ClaudeCode, AgentKind::Codex] {
         let agent = agent_for(&spec(kind, None, &[], &[])).expect("adapter");
         assert!(
             agent.version().is_some(),
             "{kind:?}: the fake from the variable"
         );
-        let trial = Trial::new();
-        let outcome = trial.run(agent.as_ref(), "Create ok.txt", MINUTE);
-        assert_eq!(outcome.end, AgentEnd::Exited(0), "{kind:?}");
-        let env = trial.err_lines("env: ");
-        for name in REMOVED_ENV {
-            assert!(
-                !env.iter().any(|line| line.starts_with(&format!("{name}="))),
-                "{kind:?}: {name} reached the agent: {env:?}"
+        for pass_env in [&[][..], &keep[..]] {
+            let trial = Trial::new();
+            let outcome = trial.run_passing(agent.as_ref(), "Create ok.txt", MINUTE, pass_env);
+            assert_eq!(outcome.end, AgentEnd::Exited(0), "{kind:?}");
+            let env = trial.err_lines("env: ");
+            for name in REMOVED_ENV.iter().chain(CALLER_ENV) {
+                assert!(
+                    !env.iter().any(|line| line.starts_with(&format!("{name}="))),
+                    "{kind:?}: {name} reached the agent: {env:?}"
+                );
+            }
+            for kept in ["ANTHROPIC_API_KEY=the-provider's", "LC_ALL=C"] {
+                assert!(env.iter().any(|line| line == kept), "{kind:?}: {env:?}");
+            }
+            assert_eq!(
+                env.iter().any(|line| line == "U23_W2_KEEP=kept"),
+                !pass_env.is_empty(),
+                "{kind:?}, --pass-env {pass_env:?}: {env:?}"
             );
-        }
-        for kept in ["MEMPROVE_DATA_DIR=/kept/data", "U23_W2_KEEP=kept"] {
-            assert!(env.iter().any(|line| line == kept), "{kind:?}: {env:?}");
         }
     }
     let agent_path = fixture("command-agent");

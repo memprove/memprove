@@ -134,7 +134,7 @@ was asked), and add the setup the check needs that the guess cannot know (a serv
 
 ```
 memprove eval run      [<task file or dir>...] [--agent claude-code|codex|command] [--model M]
-                       [--agent-arg A]... [--trials N] [--jobs N] [--out-root DIR]
+                       [--agent-arg A]... [--pass-env NAME]... [--trials N] [--jobs N] [--out-root DIR]
                        [--keep-worktrees] [--memory none|pack] [--no-memory] [-- <program> <args>...]
 memprove eval ab       [<task file or dir>...] [the options of run but --memory and --no-memory]
 memprove eval report   [<run dir>|latest] [--baseline FILE|RUN_DIR] [--format markdown|json]
@@ -183,8 +183,27 @@ prompt to `prompt.md`, in the trial's directory. `--model` and each `--agent-arg
   `turns`) has its usage recorded.
 
 `MEMPROVE_EVAL_CLAUDE` and `MEMPROVE_EVAL_CODEX` name the programs when they are not `claude` and `codex` on `PATH`.
-The agent, setup and check commands start without the variables that would tie them to the session running the
-evaluation: memprove's `MEMPROVE_CLIENT_SESSION`, `MEMPROVE_AGENT_NAME`, `MEMPROVE_AGENT_ROLE`,
+
+The agent inherits only a list of this environment's variables, and those named with `--pass-env NAME` (repeatable):
+
+- the shell's: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `COLORTERM`, `LANG`, `LANGUAGE`, `TZ`, `TMPDIR`,
+  `TMP`, `TEMP`, and every `LC_*` and `XDG_*`;
+- the network's: `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` (and their lower-case forms), `SSL_CERT_FILE`,
+  `SSL_CERT_DIR`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`;
+- the model providers' login and settings: every `ANTHROPIC_*`, `OPENAI_*`, `AWS_*` and `VERTEX_REGION_*`,
+  `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, `CODEX_HOME`,
+  `GOOGLE_APPLICATION_CREDENTIALS`, `CLOUD_ML_REGION`, `IS_SANDBOX`;
+- the toolchains': every `CARGO_*`, `RUSTUP_*` and `npm_config_*`, `LIBCLANG_PATH`, `DYLD_FALLBACK_LIBRARY_PATH`,
+  `LD_LIBRARY_PATH`, `PKG_CONFIG_PATH`, `CC`, `CXX`, `JAVA_HOME`, `GOPATH`, `GOROOT`, `GOCACHE`, `GOMODCACHE`, `GOFLAGS`,
+  `GOPROXY`, `NVM_DIR`, `PNPM_HOME`, `BUN_INSTALL`, `VIRTUAL_ENV`, `CONDA_PREFIX`, `PYENV_ROOT`, `HOMEBREW_PREFIX`,
+  `HOMEBREW_CELLAR`, `HOMEBREW_REPOSITORY`, and Git's `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL`.
+
+Nothing else reaches it: not a calling Claude Code session's socket, tokens or identity (`CLAUDE_CODE_MESSAGING_*`,
+`CLAUDE_SESSION_INGRESS_TOKEN_FILE`, `CLAUDE_CODE_USER_EMAIL`, `CLAUDE_CODE_ACCOUNT_UUID`, `CLAUDE_CODE_REMOTE*`), not
+`SSH_AUTH_SOCK`, `GITHUB_TOKEN` or memprove's `MEMPROVE_DATA_DIR`. `run.json` records the `--pass-env` names (never
+values) as the agent's `pass_env`. The variables that would tie a command to the session running the evaluation are
+never passed, `--pass-env` refuses them, and the setup and check commands, which otherwise get this environment, start
+without them too: memprove's `MEMPROVE_CLIENT_SESSION`, `MEMPROVE_AGENT_NAME`, `MEMPROVE_AGENT_ROLE`,
 `MEMPROVE_PARENT_SESSION` (and their `CONTINUITY_` forms), Claude Code's session variables (`CLAUDECODE`,
 `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_REMOTE_SESSION_ID` and the like) and Codex's `CODEX_THREAD_ID`. The agent's
 `MEMPROVE_CONFIG_DIR` is an empty directory of the run (`agent-config/`), so a memprove command, hook or MCP server

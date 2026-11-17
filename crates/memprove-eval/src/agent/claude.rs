@@ -208,6 +208,7 @@ mod tests {
             model: Some("sonnet".to_owned()),
             command: Vec::new(),
             extra_args: vec!["--max-turns".to_owned(), "30".to_owned()],
+            pass_env: Vec::new(),
         };
         let agent = ClaudeCode::new(&spec, "/bin/claude");
         assert_eq!(

@@ -82,6 +82,7 @@ fn options(root: &Path, out: &Path, give_pack: bool) -> RunOptions {
             model: None,
             command: vec!["sh".to_owned(), "-c".to_owned(), script.to_owned()],
             extra_args: Vec::new(),
+            pass_env: Vec::new(),
         },
         trials: 1,
         jobs: 1,

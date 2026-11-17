@@ -5,9 +5,10 @@
 //! process group, the whole group killed past the time limit), with the
 //! worktree as the working directory, standard input closed, standard
 //! output in `agent.out` and standard error in `agent.err` of the trial's
-//! log directory, the prompt in `prompt.md` there, and the variables of
-//! [`REMOVED_ENV`] taken out of its environment. An adapter reports how
-//! the program ended and what it said it used; it never judges the work.
+//! log directory, the prompt in `prompt.md` there, and an environment of
+//! the variables [`passes`] keeps and nothing else (U23-F3). An adapter
+//! reports how the program ended and what it said it used; it never judges
+//! the work.
 
 use std::{
     fs,
@@ -39,9 +40,11 @@ pub struct AgentRequest<'a> {
     /// The trial's directory: the adapter writes `agent.out` and
     /// `agent.err` (and may write more files) here.
     pub log_dir: &'a Path,
-    /// Variables set in the agent's environment, after [`REMOVED_ENV`] is
-    /// taken out and before the adapter's own.
+    /// Variables set in the agent's environment, after the inherited ones
+    /// [`passes`] keeps and before the adapter's own.
     pub env: &'a [(String, String)],
+    /// Names the run passes on besides [`PASSED_ENV`] (`--pass-env`).
+    pub pass_env: &'a [String],
 }
 
 /// An agent that can run tasks; one value runs every trial of a run,
@@ -83,9 +86,10 @@ pub const PROMPT_FILE: &str = "prompt.md";
 /// directory.
 pub const USAGE_FILE: &str = "usage.json";
 
-/// Variables taken out of every agent's environment, because they would
-/// tie the agent to the session that started `memprove eval` instead of
-/// letting it start as a session of its own:
+/// Variables taken out of the environment of setup and check commands,
+/// and never passed to an agent, because they would tie the command to the
+/// session that started `memprove eval` instead of letting it start as a
+/// session of its own:
 ///
 /// - memprove's client Session and agent declaration, under the current
 ///   and the earlier (`CONTINUITY_`) names: with them, the agent's hook
@@ -102,9 +106,7 @@ pub const USAGE_FILE: &str = "usage.json";
 /// - this module's own per-trial variables, in case `memprove eval` runs
 ///   inside a `command` agent of another run.
 ///
-/// Credentials, proxies, `PATH`, `HOME` and memprove's data and config
-/// directories are kept: the agent works with the same setup and memory as
-/// the caller.
+/// An agent gets less still: only what [`passes`] keeps (U23-F3).
 pub const REMOVED_ENV: &[&str] = &[
     "MEMPROVE_CLIENT_SESSION",
     "MEMPROVE_AGENT_NAME",
@@ -135,6 +137,142 @@ pub const REMOVED_ENV: &[&str] = &[
     USAGE_FILE_ENV,
     MODEL_ENV,
 ];
+
+/// U23-F3: the variables an agent inherits from `memprove eval`'s
+/// environment, besides those named by a prefix of [`PASSED_ENV_PREFIXES`]
+/// and the run's `--pass-env` names; nothing else reaches it. Whatever
+/// else the caller has (its client session's sockets and tokens, its
+/// identity, `SSH_AUTH_SOCK`, `GITHUB_TOKEN`, memprove's data directory
+/// and token) stays with the caller. Kept: what a shell and a toolchain
+/// need (the user, home, locale, temporary directory, proxies and
+/// certificates, the usual compiler and package manager directories), and
+/// what the agent logs in with (`CLAUDE_CONFIG_DIR`,
+/// `CLAUDE_CODE_OAUTH_TOKEN`, `CODEX_HOME`, and the `ANTHROPIC_`,
+/// `OPENAI_`, `AWS_` and Vertex variables).
+pub const PASSED_ENV: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "TERM",
+    "COLORTERM",
+    "LANG",
+    "LANGUAGE",
+    "TZ",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "all_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "NODE_EXTRA_CA_CERTS",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "CLAUDE_CONFIG_DIR",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CODEX_HOME",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "CLOUD_ML_REGION",
+    "IS_SANDBOX",
+    "LIBCLANG_PATH",
+    "DYLD_FALLBACK_LIBRARY_PATH",
+    "LD_LIBRARY_PATH",
+    "PKG_CONFIG_PATH",
+    "CC",
+    "CXX",
+    "JAVA_HOME",
+    "GOPATH",
+    "GOROOT",
+    "GOCACHE",
+    "GOMODCACHE",
+    "GOFLAGS",
+    "GOPROXY",
+    "NVM_DIR",
+    "PNPM_HOME",
+    "BUN_INSTALL",
+    "VIRTUAL_ENV",
+    "CONDA_PREFIX",
+    "PYENV_ROOT",
+    "HOMEBREW_PREFIX",
+    "HOMEBREW_CELLAR",
+    "HOMEBREW_REPOSITORY",
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+];
+
+/// U23-F3: the prefixes of the variables an agent inherits besides
+/// [`PASSED_ENV`]: locale and XDG directories, the model providers' own
+/// variables, and Rust's and npm's settings.
+pub const PASSED_ENV_PREFIXES: &[&str] = &[
+    "LC_",
+    "XDG_",
+    "ANTHROPIC_",
+    "OPENAI_",
+    "AWS_",
+    "VERTEX_REGION_",
+    "CARGO_",
+    "RUSTUP_",
+    "npm_config_",
+];
+
+/// U23-F3: whether an agent inherits the variable `name`: one of
+/// [`PASSED_ENV`], one with a prefix of [`PASSED_ENV_PREFIXES`], or one of
+/// `pass_env` (the run's `--pass-env` names); never one of
+/// [`REMOVED_ENV`].
+#[must_use]
+pub fn passes(name: &str, pass_env: &[String]) -> bool {
+    !REMOVED_ENV.contains(&name)
+        && (PASSED_ENV.contains(&name)
+            || PASSED_ENV_PREFIXES
+                .iter()
+                .any(|prefix| name.starts_with(prefix))
+            || pass_env.iter().any(|passed| passed == name))
+}
+
+/// U23-F3: refuses a `--pass-env` name that is empty, holds `=` or a NUL,
+/// or is one of [`REMOVED_ENV`] (it would tie the agent to the session
+/// running the evaluation).
+///
+/// # Errors
+/// [`EvalError::Usage`] naming the first such name.
+pub fn check_pass_env(names: &[String]) -> Result<(), EvalError> {
+    for name in names {
+        if name.is_empty() || name.contains(['=', '\0']) {
+            return Err(EvalError::Usage(format!(
+                "--pass-env {name:?} is not the name of a variable"
+            )));
+        }
+        if REMOVED_ENV.contains(&name.as_str()) {
+            return Err(EvalError::Usage(format!(
+                "--pass-env {name}: memprove eval never passes it to an agent, since it would \
+                 tie the agent to the session running the evaluation"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// U23-F3: the variables of this process's environment an agent inherits
+/// ([`passes`]); a name or value that is not UTF-8 is left out.
+#[must_use]
+pub fn inherited_env(pass_env: &[String]) -> Vec<(String, String)> {
+    std::env::vars_os()
+        .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)))
+        .filter(|(name, _)| passes(name, pass_env))
+        .collect()
+}
 
 /// How long `<program> --version` may take.
 const VERSION_TIMEOUT: Duration = Duration::from_secs(20);
@@ -209,9 +347,7 @@ fn version_line(program: &str, args: &[&str]) -> Option<String> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    for name in REMOVED_ENV {
-        process.env_remove(name);
-    }
+    process.env_clear().envs(inherited_env(&[]));
     let mut child = process.spawn().ok()?;
     let started = Instant::now();
     let status = loop {
@@ -255,13 +391,17 @@ struct Launch<'a> {
 /// how long it ran, in milliseconds.
 fn launch(request: &AgentRequest<'_>, what: &Launch<'_>) -> (AgentEnd, u64) {
     let started = Instant::now();
-    let removed: Vec<String> = REMOVED_ENV.iter().map(|name| (*name).to_owned()).collect();
-    let env: Vec<(String, String)> = request.env.iter().chain(&what.env).cloned().collect();
+    let env: Vec<(String, String)> = inherited_env(request.pass_env)
+        .into_iter()
+        .chain(request.env.iter().cloned())
+        .chain(what.env.iter().cloned())
+        .collect();
     let invocation = Invocation {
         argv: &what.argv,
         cwd: request.workdir,
         env: &env,
-        env_remove: &removed,
+        env_remove: &[],
+        clear_env: true,
         stdout: request.log_dir.join(STDOUT_FILE),
         stderr: request.log_dir.join(STDERR_FILE),
         timeout: request.timeout,
@@ -374,6 +514,45 @@ mod tests {
             model: None,
             command: command.iter().map(|arg| (*arg).to_owned()).collect(),
             extra_args: Vec::new(),
+            pass_env: Vec::new(),
+        }
+    }
+
+    /// U23-F3: what an agent inherits.
+    #[test]
+    fn an_agent_inherits_the_listed_variables_only() {
+        let none: &[String] = &[];
+        for name in [
+            "PATH",
+            "HOME",
+            "LC_ALL",
+            "ANTHROPIC_API_KEY",
+            "CODEX_HOME",
+            "CARGO_HOME",
+        ] {
+            assert!(passes(name, none), "{name}");
+        }
+        for name in [
+            "CLAUDECODE",
+            "CLAUDE_CODE_MESSAGING_TOKEN",
+            "CLAUDE_CODE_MESSAGING_SOCKET",
+            "CLAUDE_SESSION_INGRESS_TOKEN_FILE",
+            "CLAUDE_CODE_USER_EMAIL",
+            "CLAUDE_CODE_ACCOUNT_UUID",
+            "CLAUDE_CODE_REMOTE",
+            "MEMPROVE_DATA_DIR",
+            "MEMPROVE_TOKEN",
+            "SSH_AUTH_SOCK",
+            "GITHUB_TOKEN",
+            "PWD",
+        ] {
+            assert!(!passes(name, none), "{name}");
+        }
+        let extra = vec!["PYTHONPATH".to_owned()];
+        assert!(passes("PYTHONPATH", &extra));
+        assert!(check_pass_env(&extra).is_ok());
+        for bad in ["", "A=B", "CLAUDECODE", "MEMPROVE_CLIENT_SESSION"] {
+            assert!(check_pass_env(&[bad.to_owned()]).is_err(), "{bad:?}");
         }
     }
 
@@ -429,6 +608,7 @@ mod tests {
             timeout: Duration::from_secs(5),
             log_dir: dir.path(),
             env: &[],
+            pass_env: &[],
         };
         let (end, _) = launch(
             &request,

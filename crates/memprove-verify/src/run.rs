@@ -506,6 +506,7 @@ impl Run<'_> {
                     .iter()
                     .map(|variable| (*variable).to_owned())
                     .collect::<Vec<_>>(),
+                clear_env: false,
                 stdout: logs.join(format!("{stem}.out")),
                 stderr: logs.join(format!("{stem}.err")),
                 timeout: spec.timeout,

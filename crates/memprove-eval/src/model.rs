@@ -99,6 +99,9 @@ pub struct AgentSpec {
     pub command: Vec<String>,
     /// More arguments passed to the agent as they are.
     pub extra_args: Vec<String>,
+    /// U23-F3: variables the agent inherits besides the ones
+    /// [`crate::agent::passes`] keeps by default (`--pass-env`).
+    pub pass_env: Vec<String>,
 }
 
 /// Token use and cost one agent run reported. Every member is `None` when
@@ -401,6 +404,7 @@ impl RunRecord {
                     ("version", Out::opt(self.agent_version.as_deref(), Out::str)),
                     ("command", Out::strs(&self.agent.command)),
                     ("extra_args", Out::strs(&self.agent.extra_args)),
+                    ("pass_env", Out::strs(&self.agent.pass_env)),
                 ]),
             ),
             (
@@ -478,6 +482,12 @@ impl RunRecord {
                 model: agent.opt_str("model")?.map(str::to_owned),
                 command: agent.strs("command")?,
                 extra_args: agent.strs("extra_args")?,
+                // U23-F3: absent in a run.json written before --pass-env.
+                pass_env: if agent.get("pass_env").is_some() {
+                    agent.strs("pass_env")?
+                } else {
+                    Vec::new()
+                },
             },
             agent_version: agent.opt_str("version")?.map(str::to_owned),
             trials_per_task,
@@ -744,6 +754,7 @@ pub(crate) mod fixtures {
                 model: Some("claude-sonnet-5-5".to_owned()),
                 command: Vec::new(),
                 extra_args: vec!["--max-turns".to_owned(), "30".to_owned()],
+                pass_env: Vec::new(),
             },
             agent_version: Some("2.3.1 (Claude Code)".to_owned()),
             trials_per_task: 1,
