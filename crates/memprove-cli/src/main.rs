@@ -666,8 +666,8 @@ impl InitPlan {
         );
         if clients.is_empty() {
             println!(
-                "clients: none detected; --client claude-code, --client codex, or --client cursor \
-                 names one"
+                "clients: none detected; --client claude-code, --client codex, --client cursor, \
+                 or --client trae names one"
             );
         } else {
             let names: Vec<&str> = clients.iter().map(|client| client.name()).collect();
@@ -908,6 +908,44 @@ impl InitPlan {
         )?);
         Ok(steps)
     }
+
+    /// Step 6: TRAE and TRAE CN: the hook in .trae/hooks.json, the server
+    /// in .trae/mcp.json, the note as the rule .trae/rules/memprove.md.
+    fn trae(&self) -> Result<Vec<memprove_cli::init::Step>, String> {
+        use memprove_cli::init::{self, Step};
+        let hooks_file = self.root.join(hook::TRAE_HOOKS_FILE);
+        let mcp_json = self.root.join(init::TRAE_MCP_FILE);
+        let (hooks, server) = if self.dry_run {
+            (Step::WouldWrite(hooks_file), Step::WouldWrite(mcp_json))
+        } else {
+            (
+                step_of(hook::install_trae_hooks(
+                    &hooks_file,
+                    &self.executable,
+                    &self.config_text,
+                )?),
+                step_of(hook::install_mcp_json(
+                    &mcp_json,
+                    &self.executable,
+                    &self.config_text,
+                )?),
+            )
+        };
+        let hooks_written = matches!(hooks, Step::Written(_));
+        let rule = init::trae_rule();
+        let note = init::edit_text(
+            &self.root.join(init::TRAE_RULE_FILE),
+            false,
+            self.dry_run,
+            |existing| (existing != Some(rule.as_str())).then(|| rule.clone()),
+        )?;
+        let mut steps = vec![hooks];
+        if hooks_written {
+            steps.push(Step::Note(init::TRAE_TRUST_NOTE.to_owned()));
+        }
+        steps.extend([server, note]);
+        Ok(steps)
+    }
 }
 
 /// One client's writes in `init`: its steps, or the error that ended it.
@@ -947,10 +985,11 @@ fn init(
         Ok(step) => println!("{step}"),
         Err(error) => return fail(error),
     }
-    let clients: [(Client, InitWrite); 3] = [
+    let clients: [(Client, InitWrite); 4] = [
         (Client::ClaudeCode, InitPlan::claude_code),
         (Client::Codex, InitPlan::codex),
         (Client::Cursor, InitPlan::cursor),
+        (Client::Trae, InitPlan::trae),
     ];
     for (client, write) in clients {
         if !plan.clients.contains(&client) {
@@ -966,7 +1005,7 @@ fn init(
         }
     }
 
-    // 6. The check.
+    // 7. The check.
     if plan.dry_run {
         println!("doctor is not run in a dry run");
         return ExitCode::SUCCESS;

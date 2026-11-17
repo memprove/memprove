@@ -1022,9 +1022,10 @@ pub const HOOK_COMMANDS: &[CommandHelp] = &[
             ),
         ],
         notes: "Configured as a command hook (see `memprove hook print-config`; `memprove init`\n\
-                also writes it into Codex's .codex/hooks.json, as a shell command, and with\n\
-                --client cursor into .cursor/hooks.json). Reads the SessionStart JSON on\n\
-                standard input (session_id, cwd, source; Codex sends the same members) as\n\
+                also writes it into Codex's .codex/hooks.json and TRAE's .trae/hooks.json, as a\n\
+                shell command, and with --client cursor into .cursor/hooks.json). Reads the\n\
+                SessionStart JSON on standard input (session_id, cwd, source; Codex and TRAE\n\
+                send the same members) as\n\
                 untrusted input; without --client cursor, an input that names cursor_version\n\
                 (Cursor running the hooks of .claude/settings.local.json) gets no output, so\n\
                 that Cursor's own handler answers it once.\n\
@@ -1195,7 +1196,7 @@ pub const MAINTENANCE_COMMANDS: &[CommandHelp] = &[
         name: "init",
         summary: "enable memprove in this repository: register the Project, write the clients' configuration, run doctor",
         usage: &[
-            "init [--client <claude-code|codex|cursor>]... [--operator-token <FILE>] [--allow-tools] [--dry-run]",
+            "init [--client <claude-code|codex|cursor|trae>]... [--operator-token <FILE>] [--allow-tools] [--dry-run]",
         ],
         calls: Some(
             "registerProject (control), with the operator's token; then the read-only calls of \
@@ -1204,7 +1205,7 @@ pub const MAINTENANCE_COMMANDS: &[CommandHelp] = &[
         options: &[
             (
                 "--client <NAME>",
-                "a client to write for, repeatable: claude-code, codex, or cursor; without it the clients are detected (Claude Code from ~/.claude or claude on PATH, Codex from ~/.codex or codex on PATH, Cursor from ~/.cursor, cursor on PATH, or /Applications/Cursor.app)",
+                "a client to write for, repeatable: claude-code, codex, cursor, or trae (TRAE and TRAE CN); without it the clients are detected (Claude Code from ~/.claude or claude on PATH, Codex from ~/.codex or codex on PATH, Cursor from ~/.cursor, cursor on PATH, or /Applications/Cursor.app, TRAE from ~/.trae-cn or ~/.trae)",
             ),
             (
                 "--operator-token <FILE>",
@@ -1224,7 +1225,8 @@ pub const MAINTENANCE_COMMANDS: &[CommandHelp] = &[
                 the Project (registerProject with the operator's token; a repository already\n\
                 registered gets its Project back); adds .claude/settings.local.json and .mcp.json\n\
                 (and Codex's .codex/hooks.json; Cursor's .cursor/mcp.json,\n\
-                .cursor/rules/memprove.mdc and .cursor/hooks.json) to\n\
+                .cursor/rules/memprove.mdc and .cursor/hooks.json; TRAE's .trae/hooks.json,\n\
+                .trae/mcp.json and .trae/rules/memprove.md) to\n\
                 .git/info/exclude, so that they never become untracked files that keep a run's\n\
                 Evidence from being verified; for Claude Code runs `hook install` (the\n\
                 SessionStart hook and env.MEMPROVE_CONFIG_DIR in .claude/settings.local.json,\n\
@@ -1239,7 +1241,13 @@ pub const MAINTENANCE_COMMANDS: &[CommandHelp] = &[
                 in /hooks; init trusts nothing for you); for Cursor writes mcpServers.memprove\n\
                 into .cursor/mcp.json, the sessionStart hook (hook session-start --client\n\
                 cursor) into .cursor/hooks.json, and the same note as an always-applied rule in\n\
-                .cursor/rules/memprove.mdc; then runs doctor and prints its report. Every\n\
+                .cursor/rules/memprove.mdc; for TRAE and TRAE CN writes the SessionStart hook\n\
+                as one shell command line into .trae/hooks.json (TRAE runs it once you trust\n\
+                the folder and enable the hook in Settings > Hooks; keep TRAE's import of\n\
+                Claude Code hooks off, or it runs the Claude Code hook as well),\n\
+                mcpServers.memprove into .trae/mcp.json (read once project MCP is on), and the\n\
+                same note as an always-applied rule in .trae/rules/memprove.md; then runs\n\
+                doctor and prints its report. Every\n\
                 file it edits keeps its other content; run again, it changes nothing. What init\n\
                 wrote under the previous name continuity is replaced: the AGENTS.md note between\n\
                 <!-- continuity:begin --> and <!-- continuity:end -->, the Codex table\n\
@@ -1289,12 +1297,13 @@ pub const MAINTENANCE_COMMANDS: &[CommandHelp] = &[
                 --config-dir argument, else env.MEMPROVE_CONFIG_DIR: WARN when there is no entry\n\
                 or it has neither, FAIL when another; one in .claude/settings.local.json or\n\
                 .claude/settings.json counts for nothing (Claude Code does not read it), and the\n\
-                line says so); client-hooks (only when .codex/hooks.json or .cursor/hooks.json\n\
-                exists: each runs `<path> hook session-start` as `memprove init` writes it, <path>\n\
-                exists, Cursor's has --client cursor, and its --config-dir is the configuration\n\
-                directory doctor uses: WARN when a file has no such handler or it has no\n\
-                --config-dir, FAIL when another; whether Codex trusts the project and approved the\n\
-                hook in /hooks is not checked); ledger (verifyLedger of the\n\
+                line says so); client-hooks (only when .codex/hooks.json, .cursor/hooks.json or\n\
+                .trae/hooks.json exists: each runs `<path> hook session-start` as `memprove init`\n\
+                writes it, <path> exists, Cursor's has --client cursor, and its --config-dir is\n\
+                the configuration directory doctor uses: WARN when a file has no such handler or\n\
+                it has no --config-dir, FAIL when another; whether Codex trusts the project and\n\
+                approved the hook in /hooks, or TRAE trusts the folder and enabled the hook, is\n\
+                not checked); ledger (verifyLedger of the\n\
                 context's Project: counts and chain head, or the first record that does not\n\
                 hold). A check that cannot be made (no daemon, no token) is a WARN that says why.\n\
                 Each line is `<STATUS> <check>: <detail>`, and the last line counts them; --json\n\

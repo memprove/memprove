@@ -56,6 +56,15 @@ https://github.com/memprove/memprove/releases.
   `memprove` exists, Cursor's has `--client cursor`, and its
   `--config-dir` is the configuration directory doctor uses. Whether Codex
   trusts the project and approved the hook in `/hooks` is not checked.
+- `memprove init --client trae` enables TRAE and TRAE CN (detected from
+  `~/.trae-cn` or `~/.trae`): the session-start hook in `.trae/hooks.json`
+  (the same `hook session-start` as Codex's, as one shell command line;
+  TRAE sends Claude Code's members and adds plain output to the context),
+  `mcpServers.memprove` in `.trae/mcp.json`, and the note as the
+  always-applied rule `.trae/rules/memprove.md`; all three go into
+  `.git/info/exclude`, and doctor's `client-hooks` line checks the hook.
+  TRAE runs it once you trust the folder and enable the hook; `init` says
+  so and turns nothing on itself.
 
 ### Fixed
 

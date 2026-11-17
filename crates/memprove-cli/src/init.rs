@@ -6,7 +6,9 @@
 //! (`~/.codex/config.toml`) and Cursor (`.cursor/mcp.json`), U24 (H1, H2):
 //! their session-start hooks (`.codex/hooks.json`, `.cursor/hooks.json`), a
 //! short note for the agent that reads no Pack at the start of its session
-//! (AGENTS.md, `.cursor/rules/memprove.mdc`), and runs `doctor`. Which clients it
+//! (AGENTS.md, `.cursor/rules/memprove.mdc`), for TRAE and TRAE CN the hook,
+//! the server and the note in `.trae/` (`hooks.json`, `mcp.json`,
+//! `rules/memprove.md`), and runs `doctor`. Which clients it
 //! writes for is detected from the home directory and `PATH`, or given with
 //! `--client`. The operator's and the agent's tokens stay hidden: the
 //! operator's is read from the installation, the agent's was written by
@@ -35,11 +37,14 @@ pub enum Client {
     /// Cursor: `.cursor/mcp.json`, U24 (H2) the hook in `.cursor/hooks.json`,
     /// and `.cursor/rules/memprove.mdc`.
     Cursor,
+    /// TRAE and TRAE CN: the hook in `.trae/hooks.json`, `.trae/mcp.json`, and
+    /// `.trae/rules/memprove.md`.
+    Trae,
 }
 
 impl Client {
     /// Every client, in the order `init` handles them.
-    pub const ALL: [Self; 3] = [Self::ClaudeCode, Self::Codex, Self::Cursor];
+    pub const ALL: [Self; 4] = [Self::ClaudeCode, Self::Codex, Self::Cursor, Self::Trae];
 
     /// The name `--client` takes.
     #[must_use]
@@ -48,6 +53,7 @@ impl Client {
             Self::ClaudeCode => "claude-code",
             Self::Codex => "codex",
             Self::Cursor => "cursor",
+            Self::Trae => "trae",
         }
     }
 
@@ -76,7 +82,9 @@ pub struct InitSpec {
 /// The clients found on this machine: Claude Code when `~/.claude` exists
 /// or `claude` is on `PATH`; Codex when its home (`$CODEX_HOME`, else `~/.codex`) exists or `codex` is on
 /// `PATH`; Cursor when `~/.cursor` exists, `cursor` is on `PATH`, or
-/// `/Applications/Cursor.app` exists.
+/// `/Applications/Cursor.app` exists; TRAE when `~/.trae-cn` (TRAE CN) or
+/// `~/.trae` (TRAE) exists, the directories that hold its user hooks and
+/// rules.
 #[must_use]
 pub fn detect_clients(
     home: Option<&Path>,
@@ -97,6 +105,9 @@ pub fn detect_clients(
     if in_home(".cursor") || on_path("cursor") || Path::new("/Applications/Cursor.app").is_dir() {
         found.push(Client::Cursor);
     }
+    if in_home(".trae-cn") || in_home(".trae") {
+        found.push(Client::Trae);
+    }
     found
 }
 
@@ -115,7 +126,7 @@ pub fn codex_home_dir(home: Option<&Path>, codex_home: Option<&OsStr>) -> Option
 /// inside the Workspace, which must not become untracked files (an untracked
 /// file keeps a run's Evidence from being `verified`). The Codex hooks file
 /// (U24 H1) is added when Codex is among `clients`, the Cursor files when
-/// Cursor is.
+/// Cursor is, the TRAE files when TRAE is.
 #[must_use]
 pub fn exclude_entries(clients: &[Client]) -> Vec<&'static str> {
     let mut entries = vec![".claude/settings.local.json", ".mcp.json"];
@@ -126,6 +137,11 @@ pub fn exclude_entries(clients: &[Client]) -> Vec<&'static str> {
         entries.push(".cursor/mcp.json");
         entries.push(".cursor/rules/memprove.mdc");
         entries.push(crate::hook::CURSOR_HOOKS_FILE);
+    }
+    if clients.contains(&Client::Trae) {
+        entries.push(crate::hook::TRAE_HOOKS_FILE);
+        entries.push(TRAE_MCP_FILE);
+        entries.push(TRAE_RULE_FILE);
     }
     entries
 }
@@ -174,6 +190,30 @@ pub const CODEX_TRUST_NOTE: &str = "Codex runs this hook only after you trust it
                                     in this repository, trust the project, and approve the \
                                     memprove hook in /hooks; until then the note in AGENTS.md \
                                     tells the agent to read the Pack through the MCP tool pack";
+
+/// TRAE: the file TRAE reads a project's MCP servers from, relative to the
+/// Workspace root; TRAE loads it once project MCP is turned on in its
+/// settings.
+pub const TRAE_MCP_FILE: &str = ".trae/mcp.json";
+
+/// TRAE: the project rule `init` writes, relative to the Workspace root.
+pub const TRAE_RULE_FILE: &str = ".trae/rules/memprove.md";
+
+/// TRAE: what `init` says after writing `.trae/hooks.json`: TRAE runs a
+/// project's hooks only in a folder the user trusts, once the hook is
+/// enabled, and reads `.trae/mcp.json` only with project MCP on; `init`
+/// turns on none of them. A hook TRAE runs in its sandbox has restricted
+/// file access, so it may not reach the configuration directory or the
+/// daemon's socket. With its import of Claude Code hooks on, TRAE also runs
+/// the handler of `.claude/settings.local.json`.
+pub const TRAE_TRUST_NOTE: &str = "TRAE runs this hook only after you allow it: open this \
+                                   repository in TRAE (or TRAE CN), trust the folder, enable the \
+                                   memprove hook in Settings > Hooks with local runs (in the \
+                                   sandbox it may not reach memprove), turn on project MCP in \
+                                   Settings > MCP, and keep the import of Claude Code hooks off, \
+                                   or TRAE runs memprove's Claude Code hook as well; until then \
+                                   the rule in .trae/rules tells the agent to read the Pack \
+                                   through the MCP tool pack";
 
 /// The note for an agent whose session started without a Pack (AGENTS.md
 /// for Codex, a Cursor rule; U24: a hook Codex has not been allowed to run,
@@ -263,6 +303,14 @@ pub fn agents_with_note(existing: Option<&str>) -> Option<String> {
 /// applied, the one sentence of [`NOTE`].
 #[must_use]
 pub fn cursor_rule() -> String {
+    format!("---\nalwaysApply: true\n---\n{NOTE}\n")
+}
+
+/// TRAE: the project rule `init` writes at `.trae/rules/memprove.md`:
+/// always applied (TRAE's rule frontmatter is Cursor's), the one sentence
+/// of [`NOTE`].
+#[must_use]
+pub fn trae_rule() -> String {
     format!("---\nalwaysApply: true\n---\n{NOTE}\n")
 }
 
@@ -499,7 +547,7 @@ mod tests {
         CODEX_TABLE, Client, NOTE, NOTE_BEGIN, NOTE_END, PREVIOUS_CODEX_TABLE, PREVIOUS_NOTE_BEGIN,
         PREVIOUS_NOTE_END, agents_with_note, codex_config_with, codex_home_dir, codex_table,
         cursor_rule, detect_clients, exclude_entries, exclude_with, installed_operator_token,
-        is_previous_cursor_rule,
+        is_previous_cursor_rule, trae_rule,
     };
     use std::path::Path;
 
@@ -508,6 +556,7 @@ mod tests {
         for client in Client::ALL {
             assert_eq!(Client::parse(client.name()), Some(client));
         }
+        assert_eq!(Client::parse("trae"), Some(Client::Trae));
         assert_eq!(Client::parse("vim"), None);
     }
 
@@ -535,6 +584,15 @@ mod tests {
         // The directory in the home directory counts always.
         std::fs::create_dir(home.path().join(".cursor")).unwrap();
         assert!(detect_clients(Some(home.path()), None, None).contains(&Client::Cursor));
+        // TRAE: ~/.trae-cn (TRAE CN) or ~/.trae (TRAE) in the home directory.
+        let trae =
+            |home: &std::path::Path| detect_clients(Some(home), None, None).contains(&Client::Trae);
+        assert!(!trae(home.path()));
+        for name in [".trae-cn", ".trae"] {
+            let home = tempfile::tempdir().unwrap();
+            std::fs::create_dir(home.path().join(name)).unwrap();
+            assert!(trae(home.path()), "{name}");
+        }
         // CODEX_HOME names Codex's home instead of ~/.codex.
         let elsewhere = tempfile::tempdir().unwrap();
         let codex_home = elsewhere.path().join("codex-home");
@@ -593,6 +651,17 @@ mod tests {
                 ".codex/hooks.json"
             ]
         );
+        // TRAE: its hooks, MCP and rule files.
+        assert_eq!(
+            exclude_entries(&[Client::Trae]),
+            [
+                ".claude/settings.local.json",
+                ".mcp.json",
+                ".trae/hooks.json",
+                ".trae/mcp.json",
+                ".trae/rules/memprove.md"
+            ]
+        );
     }
 
     #[test]
@@ -609,6 +678,10 @@ mod tests {
         );
         assert!(NOTE.lines().count() + 2 <= 5);
         assert!(cursor_rule().contains(NOTE) && cursor_rule().starts_with("---\n"));
+        assert_eq!(
+            trae_rule(),
+            format!("---\nalwaysApply: true\n---\n{NOTE}\n")
+        );
     }
 
     #[test]

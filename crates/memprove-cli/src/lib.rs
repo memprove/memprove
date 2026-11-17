@@ -243,7 +243,7 @@ Completion check (memprove verify --help):
                  Stop hook that keeps an agent working while a check fails
 
 Install and maintenance:
-  init [--client <claude-code|codex|cursor>]... [--operator-token <FILE>] [--allow-tools] [--dry-run]
+  init [--client <claude-code|codex|cursor|trae>]... [--operator-token <FILE>] [--allow-tools] [--dry-run]
                  enables memprove in this repository: registers the Project with
                  the operator's token, keeps memprove's files out of Evidence,
                  writes the detected clients' configuration (Claude Code: the hook,

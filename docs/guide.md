@@ -48,7 +48,7 @@ stopped after `ledger verify`).
 `memprove backup --out <DIR>` and `memprove restore --from <DIR> --data-dir <PATH>` copy a data directory offline,
 with its checksums, while the daemon is stopped. `memprove doctor` checks an installation read-only: one `PASS`,
 `WARN` or `FAIL` line per check (the builds, the daemon, the modes, the token, the configuration directory, the
-context, the hook, the MCP entry, Codex's and Cursor's hooks when their files exist, `PATH`, the guide, the ledger), exit 1
+context, the hook, the MCP entry, Codex's, Cursor's and TRAE's hooks when their files exist, `PATH`, the guide, the ledger), exit 1
 when a check fails.
 
 ## Enabling memprove in a project
@@ -59,17 +59,21 @@ The second step, once per repository, from inside its Git worktree:
 memprove init                              # the detected clients
 memprove init --allow-tools                # and Claude Code's allow rules
 memprove init --client claude-code --client codex --client cursor --dry-run
+memprove init --client trae                # TRAE and TRAE CN
 ```
 
 `init` registers the Project with the operator's token (a repository already registered gets its Project back) and
 records it for the first `memprove begin` there (which then needs no `--project`), adds `.claude/settings.local.json`
 and `.mcp.json` (and Codex's `.codex/hooks.json`; Cursor's `.cursor/mcp.json`, `.cursor/rules/memprove.mdc` and
-`.cursor/hooks.json`) to `.git/info/exclude`, runs `hook install` for Claude Code (with `--allow-tools`, `hook install
+`.cursor/hooks.json`; TRAE's `.trae/hooks.json`, `.trae/mcp.json` and `.trae/rules/memprove.md`) to
+`.git/info/exclude`, runs `hook install` for Claude Code (with `--allow-tools`, `hook install
 --allow-tools`; without it the three rules are printed, not written), writes `[mcp_servers.memprove]` into Codex's
 `config.toml` (`$CODEX_HOME`, else `~/.codex`), Codex's SessionStart hook into `.codex/hooks.json` and a short note
 into `AGENTS.md` (repository content: commit it), writes `mcpServers.memprove` into `.cursor/mcp.json`, Cursor's
-sessionStart hook into `.cursor/hooks.json` and the same note as an always-applied Cursor rule, and ends with
-`doctor`. Codex runs a project's hooks only in a project you trust, and a new or changed hook only after you approve
+sessionStart hook into `.cursor/hooks.json` and the same note as an always-applied Cursor rule, writes TRAE's
+SessionStart hook into `.trae/hooks.json`, `mcpServers.memprove` into `.trae/mcp.json` and the same note as the
+always-applied rule `.trae/rules/memprove.md` (TRAE and TRAE CN read the same files; `init` detects them from
+`~/.trae-cn` or `~/.trae`), and ends with `doctor`. Codex runs a project's hooks only in a project you trust, and a new or changed hook only after you approve
 it in `/hooks`; `init` says so and trusts nothing for you. Until then, and in Cursor's Agents Window, which drops the
 context of a `sessionStart` hook, the note tells the agent to read the Pack through the MCP tool `pack`. Every file keeps its other content; run again, it
 changes nothing (`already as asked`). What `init` wrote under the previous name `continuity` is replaced (the
@@ -148,7 +152,8 @@ committed, which holds for every linked worktree. Leave `.mcp.json` out of the l
 The same holds for what a test run leaves behind, such as Python's `__pycache__/`: while `git status --short` lists an
 untracked file, every fact on a run is `unconfirmed`, so list such files in `.gitignore` or in the exclude file.
 `AGENTS.md` is not excluded: the note is repository content and is committed. The same note as a Cursor rule,
-`.cursor/rules/memprove.mdc`, is excluded with Cursor's other files, so each clone gets it from its own `init`.
+`.cursor/rules/memprove.mdc`, is excluded with Cursor's other files, so each clone gets it from its own `init`; so is
+the TRAE rule `.trae/rules/memprove.md`.
 
 ## Importing what the repository already tells agents (`memprove import`)
 
@@ -459,6 +464,17 @@ session from `session_id`, else `conversation_id`; the Workspace from the first 
 handler prints nothing for an input that names `cursor_version`, so the Pack is injected once. Neither client sets
 `CLAUDE_ENV_FILE`, so the hook exports no client session there and the directory's context is the one commands use.
 
+**TRAE and TRAE CN.** `init --client trae` writes the handler Codex gets, `'<path>' hook session-start --config-dir
+'<config>'`, into a `SessionStart` group of `.trae/hooks.json` (with `version` 1, no matcher, timeout 10 seconds), as
+one shell command line: TRAE documents only `type`, `command` and `timeout` for a handler, not Claude Code's `args`.
+TRAE sends Claude Code's members (`session_id`, `cwd`, `hook_event_name`, `source` `startup`) and `workspace_roots`,
+reads plain standard output as context, and sets `TRAE_ENV_FILE` and `CLAUDE_ENV_FILE`, so the opening and the Pack
+are Claude Code's and the client session is exported as it is there. TRAE runs a project's hooks only in a folder you
+trust, once the hook is enabled in Settings > Hooks, and reads `.trae/mcp.json` only with project MCP turned on;
+`init` says so and turns nothing on. A hook TRAE runs in its sandbox has restricted file access and may not reach the
+configuration directory or the daemon's socket, so let it run locally. With its import of Claude Code hooks on, TRAE
+also runs the handler of `.claude/settings.local.json`; keep that import off in a repository where `init` wrote both.
+
 **The hook's time limit.** The hook gives itself 8 seconds to read the Pack, within the handler's own `timeout` of 10
 seconds that `hook install` writes, so that Claude Code never cuts it off first. When the daemon has not answered by
 then, it stops waiting, prints only
@@ -670,6 +686,9 @@ give a new session, and reports the change in pass rate task by task; `--memory 
 - The Codex and Cursor hooks are written but not run by `init`: Codex runs one only after you trust the project and
   approve the hook in `/hooks`, and Cursor's Agents Window drops a `sessionStart` hook's context (Cursor's bug; its
   editor panel and its CLI take it). The note in `AGENTS.md` and the Cursor rule cover both cases.
+- The TRAE hook is written but not run by `init`, and it has not yet been run in TRAE itself: the files follow
+  TRAE's documentation, and the hook was checked with TRAE's documented `SessionStart` input only. The TRAE rule
+  covers a session whose hook did not run.
 - `memprove eval` gives the agent a Pack only with `--memory pack` (or in the second run of `eval ab`): a trial
   worktree has no memprove context of its own, and the agent's `MEMPROVE_CONFIG_DIR` is an empty directory. The
   Pack is read once when the run starts and is given as text ahead of the prompt, not through the agent's own hook.
