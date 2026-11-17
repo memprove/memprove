@@ -48,7 +48,8 @@ stopped after `ledger verify`).
 `memprove backup --out <DIR>` and `memprove restore --from <DIR> --data-dir <PATH>` copy a data directory offline,
 with its checksums, while the daemon is stopped. `memprove doctor` checks an installation read-only: one `PASS`,
 `WARN` or `FAIL` line per check (the builds, the daemon, the modes, the token, the configuration directory, the
-context, the hook, the MCP entry, `PATH`, the guide, the ledger), exit 1 when a check fails.
+context, the hook, the MCP entry, Codex's and Cursor's hooks when their files exist, `PATH`, the guide, the ledger), exit 1
+when a check fails.
 
 ## Enabling memprove in a project
 
@@ -146,7 +147,8 @@ is `unconfirmed` (`evidence_unavailable`, with the gap `untracked_files_not_capt
 committed, which holds for every linked worktree. Leave `.mcp.json` out of the list when the project commits it.
 The same holds for what a test run leaves behind, such as Python's `__pycache__/`: while `git status --short` lists an
 untracked file, every fact on a run is `unconfirmed`, so list such files in `.gitignore` or in the exclude file.
-`AGENTS.md` and `.cursor/rules/memprove.mdc` are not excluded: the note is repository content and is committed.
+`AGENTS.md` is not excluded: the note is repository content and is committed. The same note as a Cursor rule,
+`.cursor/rules/memprove.mdc`, is excluded with Cursor's other files, so each clone gets it from its own `init`.
 
 ## Importing what the repository already tells agents (`memprove import`)
 
