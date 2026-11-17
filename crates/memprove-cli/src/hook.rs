@@ -2593,6 +2593,54 @@ fn is_own_shell_handler(handler: &JsonValue) -> bool {
             })
 }
 
+/// The words of the shell command line `command` as a POSIX shell splits
+/// them (quotes and backslashes taken out); `None` when a quote is left
+/// open.
+fn shell_words(command: &str) -> Option<Vec<String>> {
+    let mut words = Vec::new();
+    let mut rest = command.trim_start();
+    while !rest.is_empty() {
+        let (word, after) = first_shell_word(rest)?;
+        words.push(word);
+        rest = after.trim_start();
+    }
+    Some(words)
+}
+
+/// `doctor`'s `client-hooks` line: the words of each handler `init` wrote
+/// into a hooks file of Codex (`hooks.SessionStart[].hooks[]`) or, with
+/// `cursor`, of Cursor (`hooks.sessionStart[]`), in their order; a handler
+/// whose command line leaves a quote open is left out.
+#[must_use]
+pub fn client_hook_commands(hooks_file: &JsonValue, cursor: bool) -> Vec<Vec<String>> {
+    let event = hooks_file
+        .get("hooks")
+        .and_then(|hooks| {
+            hooks.get(if cursor {
+                "sessionStart"
+            } else {
+                "SessionStart"
+            })
+        })
+        .and_then(JsonValue::as_array)
+        .unwrap_or_default();
+    let handlers: Vec<&JsonValue> = if cursor {
+        event.iter().collect()
+    } else {
+        event
+            .iter()
+            .filter_map(|group| group.get("hooks").and_then(JsonValue::as_array))
+            .flatten()
+            .collect()
+    };
+    handlers
+        .into_iter()
+        .filter(|handler| is_own_shell_handler(handler))
+        .filter_map(|handler| handler.get("command").and_then(JsonValue::as_str))
+        .filter_map(shell_words)
+        .collect()
+}
+
 /// U24 (H1): the `SessionStart` group of `.codex/hooks.json`: no matcher
 /// (every source, as Claude Code's group), one command handler with the
 /// [`HANDLER_TIMEOUT_SECONDS`] timeout, and `additionalContextLimit` 0, so

@@ -250,6 +250,9 @@ pub fn run(spec: &DoctorSpec, environment: &Environment) -> Vec<Check> {
         .map(|store| store.config_dir.as_path());
     checks.push(hook_check(&root, config));
     checks.push(mcp_entry_check(&root, config));
+    if let Some(line) = client_hooks_check(&root, config) {
+        checks.push(line);
+    }
     checks.push(ledger_check(&environment.lookup, &reach));
     checks
 }
@@ -1279,6 +1282,120 @@ fn hook_check(root: &Path, config: Option<&Path>) -> Check {
     check("hook", status, detail)
 }
 
+/// The worse of two statuses.
+fn worse(left: Status, right: Status) -> Status {
+    match (left, right) {
+        (Status::Fail, _) | (_, Status::Fail) => Status::Fail,
+        (Status::Warn, _) | (_, Status::Warn) => Status::Warn,
+        _ => Status::Pass,
+    }
+}
+
+/// U24 follow-up: the `client-hooks` line, made only when the Workspace
+/// root has Codex's `.codex/hooks.json` or Cursor's `.cursor/hooks.json`
+/// (`memprove init --client codex|cursor` writes them). Each file must hold
+/// the handler `init` writes: WARN when it has none; FAIL when its program
+/// is not an absolute path to an executable file, when Cursor's lacks
+/// `--client cursor` (Cursor would get text where it reads JSON), or when
+/// its `--config-dir` names another configuration directory than doctor
+/// uses; WARN when it has no `--config-dir`. Whether Codex trusts the
+/// project and approved the hook in `/hooks` is Codex's own state and is
+/// not checked; the line says so.
+fn client_hooks_check(root: &Path, config: Option<&Path>) -> Option<Check> {
+    let mut status = Status::Pass;
+    let mut detail = String::new();
+    let mut dirs = Vec::new();
+    let mut codex = false;
+    for (file, cursor, client) in [
+        (crate::hook::CODEX_HOOKS_FILE, false, "codex"),
+        (crate::hook::CURSOR_HOOKS_FILE, true, "cursor"),
+    ] {
+        let path = root.join(file);
+        let value = match read_json(&path, "client-hooks") {
+            Ok(Some(value)) => value,
+            Ok(None) => continue,
+            Err(line) => return Some(line),
+        };
+        codex |= !cursor;
+        if !detail.is_empty() {
+            detail.push_str("; ");
+        }
+        let commands = crate::hook::client_hook_commands(&value, cursor);
+        if commands.is_empty() {
+            status = worse(status, Status::Warn);
+            write!(
+                detail,
+                "{} runs no `memprove hook session-start` (`memprove init --client {client}` \
+                 writes one)",
+                path.display()
+            )
+            .expect("writing to a String cannot fail");
+            continue;
+        }
+        for words in &commands {
+            let program = words.first().map_or("", String::as_str);
+            let executable = fs::metadata(program).is_ok_and(|metadata| {
+                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+            });
+            let state = if !Path::new(program).is_absolute() {
+                status = Status::Fail;
+                "which is not an absolute path"
+            } else if executable {
+                "which exists"
+            } else {
+                status = Status::Fail;
+                "which does not exist or is not executable"
+            };
+            write!(
+                detail,
+                "{} runs {program} hook session-start, {state}",
+                path.display()
+            )
+            .expect("writing to a String cannot fail");
+            let rest = words.get(3..).unwrap_or_default();
+            if cursor
+                && !rest
+                    .windows(2)
+                    .any(|pair| pair == crate::hook::CURSOR_CLIENT_ARGUMENTS)
+            {
+                status = Status::Fail;
+                detail.push_str(
+                    ", without --client cursor, so Cursor gets text where it reads JSON \
+                     (`memprove init --client cursor` writes it again)",
+                );
+            }
+            if let Some(pair) = rest
+                .windows(2)
+                .find(|pair| pair[0] == crate::CONFIG_DIR_OPTION)
+            {
+                dirs.push(pair[1].clone());
+            } else {
+                status = worse(status, Status::Warn);
+                detail.push_str(
+                    ", with no --config-dir, so it uses MEMPROVE_CONFIG_DIR of the \
+                     client's environment, else the default directory",
+                );
+            }
+        }
+    }
+    if detail.is_empty() {
+        return None;
+    }
+    if !dirs.is_empty() {
+        let dirs: Vec<&str> = dirs.iter().map(String::as_str).collect();
+        let (dir_status, clause) = argument_against(&dirs, config, "the client's hook");
+        status = worse(status, dir_status);
+        write!(detail, "; {clause}").expect("writing to a String cannot fail");
+    }
+    if codex {
+        detail.push_str(
+            "; Codex runs it only in a project you trust, after you approve it in /hooks \
+             (not checked here)",
+        );
+    }
+    Some(check("client-hooks", status, detail))
+}
+
 /// U5 P3 (Owner O5): the `mcp-entry` line; U5 Z-F round 1 (S1, the
 /// Owner's O5 revision): `mcpServers.memprove` of `<Workspace
 /// root>/.mcp.json`, the file Claude Code reads it from: PASS when its
@@ -1577,6 +1694,104 @@ mod tests {
         let gone = seen(None);
         assert_eq!(gone.status, Status::Warn);
         assert!(gone.detail.contains("there is no guide"), "{}", gone.detail);
+    }
+
+    /// U24 follow-up: the `client-hooks` line reads `.codex/hooks.json` and
+    /// `.cursor/hooks.json` and is left out when neither exists.
+    #[test]
+    fn u24_the_client_hooks_line_checks_the_codex_and_cursor_handlers() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().join("repo");
+        let config = scratch.path().join("config");
+        let bin = scratch.path().join("bin dir");
+        for dir in [
+            &root,
+            &config,
+            &bin,
+            &root.join(".codex"),
+            &root.join(".cursor"),
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let exe = bin.join("memprove");
+        std::fs::write(&exe, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (exe, dir) = (exe.to_str().unwrap(), config.to_str().unwrap());
+        let codex_file = root.join(crate::hook::CODEX_HOOKS_FILE);
+        let cursor_file = root.join(crate::hook::CURSOR_HOOKS_FILE);
+        let write = |path: &Path, text: &str| std::fs::write(path, text).unwrap();
+        let line = || client_hooks_check(&root, Some(&config));
+
+        assert_eq!(line(), None, "no hooks file, no line");
+
+        // What `init` writes passes, both files at once.
+        crate::hook::install_codex_hooks(&codex_file, exe, dir).unwrap();
+        crate::hook::install_cursor_hooks(&cursor_file, exe, dir).unwrap();
+        let both = line().unwrap();
+        assert_eq!(both.check, "client-hooks");
+        assert_eq!(both.status, Status::Pass, "{}", both.detail);
+        assert!(
+            both.detail
+                .contains(&format!("runs {exe} hook session-start, which exists"))
+        );
+        assert!(
+            both.detail.contains("/hooks (not checked here)"),
+            "{}",
+            both.detail
+        );
+
+        // Cursor alone: no Codex sentence.
+        std::fs::remove_file(&codex_file).unwrap();
+        let cursor = line().unwrap();
+        assert_eq!(cursor.status, Status::Pass, "{}", cursor.detail);
+        assert!(!cursor.detail.contains("in /hooks"), "{}", cursor.detail);
+
+        // Another configuration directory fails.
+        let other = scratch.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+        crate::hook::install_cursor_hooks(&cursor_file, exe, other.to_str().unwrap()).unwrap();
+        let moved = line().unwrap();
+        assert_eq!(moved.status, Status::Fail, "{}", moved.detail);
+
+        // Cursor's handler without --client cursor fails.
+        write(
+            &cursor_file,
+            &format!(
+                r#"{{"version":1,"hooks":{{"sessionStart":[{{"command":"'{exe}' hook session-start --config-dir '{dir}'"}}]}}}}"#
+            ),
+        );
+        let plain = line().unwrap();
+        assert_eq!(plain.status, Status::Fail, "{}", plain.detail);
+        assert!(
+            plain.detail.contains("without --client cursor"),
+            "{}",
+            plain.detail
+        );
+
+        // A program that is gone fails; no --config-dir warns.
+        write(
+            &cursor_file,
+            r#"{"version":1,"hooks":{"sessionStart":[{"command":"/gone/memprove hook session-start --client cursor"}]}}"#,
+        );
+        let gone = line().unwrap();
+        assert_eq!(gone.status, Status::Fail, "{}", gone.detail);
+        assert!(gone.detail.contains("does not exist"), "{}", gone.detail);
+        assert!(gone.detail.contains("no --config-dir"), "{}", gone.detail);
+
+        // A file without memprove's handler warns; one that is not JSON fails.
+        write(
+            &cursor_file,
+            r#"{"version":1,"hooks":{"sessionStart":[{"command":"echo hi"}]}}"#,
+        );
+        let foreign = line().unwrap();
+        assert_eq!(foreign.status, Status::Warn, "{}", foreign.detail);
+        assert!(
+            foreign.detail.contains("memprove init --client cursor"),
+            "{}",
+            foreign.detail
+        );
+        write(&cursor_file, "{");
+        assert_eq!(line().unwrap().status, Status::Fail);
     }
 
     #[test]

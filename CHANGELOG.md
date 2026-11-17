@@ -33,6 +33,35 @@ https://github.com/memprove/memprove/releases.
   fails, at most 3 times in a session. `verify show` prints a run again.
   See `docs/verify.md`. The ledger format, the control API and the Pack
   are unchanged.
+- `memprove init` writes the session-start hook for Codex
+  (`.codex/hooks.json`, the same `hook session-start` as Claude Code's,
+  run once you approve it in Codex's `/hooks`) and for Cursor
+  (`.cursor/hooks.json`, `hook session-start --client cursor`, which reads
+  Cursor's `sessionStart` input and answers with `additional_context`), so
+  that the Pack is injected at the start of a session in all three
+  clients; both files go into `.git/info/exclude`. The Claude Code
+  handler prints nothing when Cursor runs it, so Cursor gets the Pack
+  once.
+- `memprove import` lists the statements (one per list item or paragraph)
+  of `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`, `AGENTS.md`,
+  `GEMINI.md`, `.github/copilot-instructions.md`, `.cursorrules`,
+  `.cursor/rules/` and Claude Code's auto-memory of the repository, or of
+  the `--file`s given, without sending anything; `--select` records the
+  chosen ones as open items `<text> (imported from <source>:<line>; not
+  verified)` in one Checkpoint of the current Session, keeping the next
+  action in force, and leaves out those already in force, so a second
+  import records nothing twice.
+- `memprove doctor` has a `client-hooks` line when `.codex/hooks.json`
+  or `.cursor/hooks.json` exists: the handler `init` writes is there, its
+  `memprove` exists, Cursor's has `--client cursor`, and its
+  `--config-dir` is the configuration directory doctor uses. Whether Codex
+  trusts the project and approved the hook in `/hooks` is not checked.
+
+### Fixed
+
+- `docs/guide.md` said that `.cursor/rules/memprove.mdc` is committed;
+  `init` puts it into `.git/info/exclude` with Cursor's other files, as
+  it always has.
 
 ## 0.2.1 · 2026-11-16
 
@@ -75,24 +104,6 @@ and measure whether memprove's memory helps it.
   Ubuntu 22.04) and macOS arm64, installs each archive once and runs
   `doctor`, and attaches the archives with their SHA-256 to the tag's
   GitHub Release. Linux arm64 is left out until memproved starts there.
-- `memprove init` writes the session-start hook for Codex
-  (`.codex/hooks.json`, the same `hook session-start` as Claude Code's,
-  run once you approve it in Codex's `/hooks`) and for Cursor
-  (`.cursor/hooks.json`, `hook session-start --client cursor`, which reads
-  Cursor's `sessionStart` input and answers with `additional_context`), so
-  that the Pack is injected at the start of a session in all three
-  clients; both files go into `.git/info/exclude`. The Claude Code
-  handler prints nothing when Cursor runs it, so Cursor gets the Pack
-  once.
-- `memprove import` lists the statements (one per list item or paragraph)
-  of `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`, `AGENTS.md`,
-  `GEMINI.md`, `.github/copilot-instructions.md`, `.cursorrules`,
-  `.cursor/rules/` and Claude Code's auto-memory of the repository, or of
-  the `--file`s given, without sending anything; `--select` records the
-  chosen ones as open items `<text> (imported from <source>:<line>; not
-  verified)` in one Checkpoint of the current Session, keeping the next
-  action in force, and leaves out those already in force, so a second
-  import records nothing twice.
 
 ## 0.1.0 · 2026-11-14
 

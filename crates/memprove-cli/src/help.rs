@@ -1280,7 +1280,7 @@ pub const MAINTENANCE_COMMANDS: &[CommandHelp] = &[
                 Bash(memprove run:*) find it; WARN with the export PATH=... line otherwise);\n\
                 workspace\n\
                 (inside a Git worktree: its context and whether the daemon has that Project;\n\
-                outside one it passes and the last three checks are left out); hook (a SessionStart\n\
+                outside one it passes and the checks after it are left out); hook (a SessionStart\n\
                 handler in .claude/settings.json or .claude/settings.local.json runs\n\
                 `<path> hook session-start`, and <path> exists; its --config-dir argument, else\n\
                 their env.MEMPROVE_CONFIG_DIR, is the configuration directory doctor uses: WARN\n\
@@ -1289,7 +1289,12 @@ pub const MAINTENANCE_COMMANDS: &[CommandHelp] = &[
                 --config-dir argument, else env.MEMPROVE_CONFIG_DIR: WARN when there is no entry\n\
                 or it has neither, FAIL when another; one in .claude/settings.local.json or\n\
                 .claude/settings.json counts for nothing (Claude Code does not read it), and the\n\
-                line says so); ledger (verifyLedger of the\n\
+                line says so); client-hooks (only when .codex/hooks.json or .cursor/hooks.json\n\
+                exists: each runs `<path> hook session-start` as `memprove init` writes it, <path>\n\
+                exists, Cursor's has --client cursor, and its --config-dir is the configuration\n\
+                directory doctor uses: WARN when a file has no such handler or it has no\n\
+                --config-dir, FAIL when another; whether Codex trusts the project and approved the\n\
+                hook in /hooks is not checked); ledger (verifyLedger of the\n\
                 context's Project: counts and chain head, or the first record that does not\n\
                 hold). A check that cannot be made (no daemon, no token) is a WARN that says why.\n\
                 Each line is `<STATUS> <check>: <detail>`, and the last line counts them; --json\n\
