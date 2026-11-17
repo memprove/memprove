@@ -67,9 +67,11 @@ it.
    entry (`.claude/settings.local.json`, `.mcp.json`), the Codex server
    entry (`~/.codex/config.toml`) and hook (`.codex/hooks.json`) with a
    short note in `AGENTS.md`, the Cursor entry and hook (`.cursor/mcp.json`,
-   `.cursor/hooks.json`) with a rule, for whichever clients it detects
-   (`--client` names them), and ends with `memprove doctor`. Codex runs its
-   hook once you approve it in `/hooks`.
+   `.cursor/hooks.json`) with a rule, the TRAE and TRAE CN hook, entry and
+   rule (`.trae/hooks.json`, `.trae/mcp.json`, `.trae/rules/memprove.md`),
+   for whichever clients it detects (`--client` names them), and ends with
+   `memprove doctor`. Codex runs its hook once you approve it in `/hooks`;
+   TRAE once you trust the folder and enable the hook in its settings.
    Running it again changes nothing. No token is shown or written into the
    repository.
 
@@ -109,7 +111,7 @@ a file the test run creates, such as a first `Cargo.lock`).
 `resume --pack` prints the Context Pack: the Task's verdict, the Sessions,
 the last passed run, what can be done next, every active statement with its
 verdict and the commit it is bound to, and what to run again. `end` ends
-the Session. In Claude Code, Codex and Cursor the hook injects the Pack at
+the Session. In Claude Code, Codex, Cursor and TRAE the hook injects the Pack at
 the start of every session, and the MCP tools do what the commands do,
 except running commands: tests are always recorded with `memprove run`.
 

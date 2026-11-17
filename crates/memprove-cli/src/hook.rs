@@ -2758,6 +2758,69 @@ pub fn install_cursor_hooks(
     .apply(true)
 }
 
+/// TRAE: the file TRAE and TRAE CN read a project's hooks from, relative to
+/// the Workspace root. TRAE runs them only in a folder the user trusts, once
+/// the hook is enabled in its settings (Settings > Hooks).
+pub const TRAE_HOOKS_FILE: &str = ".trae/hooks.json";
+
+/// TRAE: the `SessionStart` group of `.trae/hooks.json`: no matcher (TRAE
+/// takes none on `SessionStart`), one command handler with the shell
+/// command Codex's has and the [`HANDLER_TIMEOUT_SECONDS`] timeout. TRAE
+/// sends Claude Code's members (`session_id`, `cwd`, `hook_event_name`,
+/// `source`, and `workspace_roots`) and adds plain standard output to the
+/// model's context, so the handler needs no `--client`. TRAE documents only
+/// `type`, `command` and `timeout` for a handler, so the program and its
+/// arguments are one shell command line, not Claude Code's exec form.
+fn trae_group(executable: &str, config_dir: &str) -> JsonValue {
+    let member = |name: &str, value: JsonValue| (name.to_owned(), value);
+    JsonValue::Object(vec![member(
+        "hooks",
+        JsonValue::Array(vec![JsonValue::Object(vec![
+            member("type", JsonValue::String("command".to_owned())),
+            member(
+                "command",
+                JsonValue::String(shell_command(executable, config_dir, false)),
+            ),
+            member(
+                "timeout",
+                JsonValue::Number(HANDLER_TIMEOUT_SECONDS.to_string()),
+            ),
+        ])]),
+    )])
+}
+
+/// TRAE: `init` for TRAE: `version` 1 when the file names none (the only
+/// version TRAE takes), and the `SessionStart` group of [`trae_group`] in
+/// `hooks_file` (`<Workspace root>/.trae/hooks.json`), in place of every
+/// handler `init` wrote there before; everything else is kept, and the
+/// file is created when it does not exist.
+///
+/// # Errors
+///
+/// As [`install`].
+pub fn install_trae_hooks(
+    hooks_file: &Path,
+    executable: &str,
+    config_dir: &str,
+) -> Result<Change, String> {
+    Edit::of(hooks_file, |original| {
+        let edited = edit_event(
+            original,
+            "SessionStart",
+            Some(trae_group(executable, config_dir)),
+            is_own_shell_handler,
+        )?;
+        let JsonValue::Object(mut members) = edited else {
+            return Err("its top level is not a JSON object".to_owned());
+        };
+        if !members.iter().any(|(name, _)| name == "version") {
+            members.insert(0, ("version".to_owned(), JsonValue::Number("1".to_owned())));
+        }
+        Ok(JsonValue::Object(members))
+    })?
+    .apply(true)
+}
+
 /// `hook uninstall`: removes the handlers `install` wrote from the settings
 /// file `settings`, and nothing else; U5 P3: with them
 /// `env.MEMPROVE_CONFIG_DIR` and an `mcpServers.memprove` it wrote
@@ -3097,6 +3160,75 @@ mod tests {
                 "./mine.sh",
                 "'/a/memprove' hook session-start --client cursor --config-dir '/a/config'"
             ]
+        );
+    }
+
+    /// TRAE: `.trae/hooks.json` gets `version` 1 and one `SessionStart`
+    /// group whose handler is a shell command line with no
+    /// `additionalContextLimit`; a second install changes nothing, one with
+    /// another path replaces the handler, and the user's own groups, other
+    /// events and `version` stay. doctor reads the handler back.
+    #[test]
+    fn trae_hooks_file_holds_one_handler_and_keeps_the_rest() {
+        let base = tempfile::tempdir().unwrap();
+        let path = base.path().join(".trae").join("hooks.json");
+        assert!(matches!(
+            install_trae_hooks(&path, "/a/memprove", "/a/config").unwrap(),
+            Change::Written(_)
+        ));
+        let first = parse_strict(&fs::read_to_string(&path).unwrap()).unwrap();
+        let JsonValue::Object(members) = &first else {
+            panic!("{first:?}");
+        };
+        assert_eq!(members[0].0, "version");
+        assert_eq!(
+            first.get("version"),
+            Some(&JsonValue::Number("1".to_owned()))
+        );
+        fs::write(
+            &path,
+            r#"{"version":1,"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"./mine.sh"}]},{"hooks":[{"type":"command","command":"'/old/memprove' hook session-start --config-dir '/old'"}]}],"Stop":[{"loop_limit":3,"hooks":[{"type":"command","command":"./stop.sh"}]}]}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            install_trae_hooks(&path, "/b/memprove", "/b/config").unwrap(),
+            Change::Written(_)
+        ));
+        assert!(matches!(
+            install_trae_hooks(&path, "/b/memprove", "/b/config").unwrap(),
+            Change::Unchanged(_)
+        ));
+        let value = parse_strict(&fs::read_to_string(&path).unwrap()).unwrap();
+        let hooks = value.get("hooks").unwrap();
+        assert!(hooks.get("Stop").is_some());
+        let groups = hooks
+            .get("SessionStart")
+            .and_then(JsonValue::as_array)
+            .unwrap();
+        assert_eq!(groups.len(), 2, "{groups:?}");
+        let handler = &groups[1]
+            .get("hooks")
+            .and_then(JsonValue::as_array)
+            .unwrap()[0];
+        assert_eq!(
+            handler.get("command").and_then(JsonValue::as_str),
+            Some("'/b/memprove' hook session-start --config-dir '/b/config'")
+        );
+        assert_eq!(
+            handler.get("timeout"),
+            Some(&JsonValue::Number("10".to_owned()))
+        );
+        assert!(handler.get("additionalContextLimit").is_none());
+        assert!(groups[1].get("matcher").is_none());
+        assert_eq!(
+            client_hook_commands(&value, false),
+            [[
+                "/b/memprove",
+                "hook",
+                "session-start",
+                "--config-dir",
+                "/b/config"
+            ]]
         );
     }
 

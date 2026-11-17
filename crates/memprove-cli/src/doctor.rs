@@ -1292,23 +1292,28 @@ fn worse(left: Status, right: Status) -> Status {
 }
 
 /// U24 follow-up: the `client-hooks` line, made only when the Workspace
-/// root has Codex's `.codex/hooks.json` or Cursor's `.cursor/hooks.json`
-/// (`memprove init --client codex|cursor` writes them). Each file must hold
+/// root has Codex's `.codex/hooks.json`, Cursor's `.cursor/hooks.json`, or
+/// TRAE's `.trae/hooks.json` (`memprove init --client codex|cursor|trae`
+/// writes them). Each file must hold
 /// the handler `init` writes: WARN when it has none; FAIL when its program
 /// is not an absolute path to an executable file, when Cursor's lacks
 /// `--client cursor` (Cursor would get text where it reads JSON), or when
 /// its `--config-dir` names another configuration directory than doctor
 /// uses; WARN when it has no `--config-dir`. Whether Codex trusts the
-/// project and approved the hook in `/hooks` is Codex's own state and is
-/// not checked; the line says so.
+/// project and approved the hook in `/hooks`, or TRAE trusts the folder and
+/// enabled the hook, is the client's own state and is not checked; the line
+/// says so.
+#[allow(clippy::too_many_lines)] // One pass over every client's hooks file.
 fn client_hooks_check(root: &Path, config: Option<&Path>) -> Option<Check> {
     let mut status = Status::Pass;
     let mut detail = String::new();
     let mut dirs = Vec::new();
     let mut codex = false;
+    let mut trae = false;
     for (file, cursor, client) in [
         (crate::hook::CODEX_HOOKS_FILE, false, "codex"),
         (crate::hook::CURSOR_HOOKS_FILE, true, "cursor"),
+        (crate::hook::TRAE_HOOKS_FILE, false, "trae"),
     ] {
         let path = root.join(file);
         let value = match read_json(&path, "client-hooks") {
@@ -1316,7 +1321,8 @@ fn client_hooks_check(root: &Path, config: Option<&Path>) -> Option<Check> {
             Ok(None) => continue,
             Err(line) => return Some(line),
         };
-        codex |= !cursor;
+        codex |= client == "codex";
+        trae |= client == "trae";
         if !detail.is_empty() {
             detail.push_str("; ");
         }
@@ -1391,6 +1397,12 @@ fn client_hooks_check(root: &Path, config: Option<&Path>) -> Option<Check> {
         detail.push_str(
             "; Codex runs it only in a project you trust, after you approve it in /hooks \
              (not checked here)",
+        );
+    }
+    if trae {
+        detail.push_str(
+            "; TRAE runs it only in a folder you trust, once the hook is enabled in Settings > \
+             Hooks (not checked here)",
         );
     }
     Some(check("client-hooks", status, detail))
@@ -1792,6 +1804,59 @@ mod tests {
         );
         write(&cursor_file, "{");
         assert_eq!(line().unwrap().status, Status::Fail);
+    }
+
+    /// TRAE: the `client-hooks` line reads `.trae/hooks.json` as Codex's
+    /// (the same `SessionStart` groups and shell command line) and says
+    /// that TRAE's trust is not checked, without the Codex sentence.
+    #[test]
+    fn trae_the_client_hooks_line_checks_the_trae_handler() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().join("repo");
+        let config = scratch.path().join("config");
+        let bin = scratch.path().join("bin");
+        for dir in [&root, &config, &bin] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let exe = bin.join("memprove");
+        std::fs::write(&exe, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (exe, dir) = (exe.to_str().unwrap(), config.to_str().unwrap());
+        let trae_file = root.join(crate::hook::TRAE_HOOKS_FILE);
+        crate::hook::install_trae_hooks(&trae_file, exe, dir).unwrap();
+        let line = client_hooks_check(&root, Some(&config)).unwrap();
+        assert_eq!(line.status, Status::Pass, "{}", line.detail);
+        assert!(
+            line.detail
+                .contains(&format!("runs {exe} hook session-start, which exists")),
+            "{}",
+            line.detail
+        );
+        assert!(
+            line.detail.contains("Settings > Hooks (not checked here)"),
+            "{}",
+            line.detail
+        );
+        assert!(!line.detail.contains("in /hooks"), "{}", line.detail);
+
+        // Another configuration directory fails; no handler warns.
+        let other = scratch.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+        crate::hook::install_trae_hooks(&trae_file, exe, other.to_str().unwrap()).unwrap();
+        let moved = client_hooks_check(&root, Some(&config)).unwrap();
+        assert_eq!(moved.status, Status::Fail, "{}", moved.detail);
+        std::fs::write(
+            &trae_file,
+            r#"{"version":1,"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"echo hi"}]}]}}"#,
+        )
+        .unwrap();
+        let foreign = client_hooks_check(&root, Some(&config)).unwrap();
+        assert_eq!(foreign.status, Status::Warn, "{}", foreign.detail);
+        assert!(
+            foreign.detail.contains("memprove init --client trae"),
+            "{}",
+            foreign.detail
+        );
     }
 
     #[test]
