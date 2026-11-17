@@ -57,6 +57,12 @@ fn u23_w1_eval_help_and_usage_errors() {
             &["eval", "ab", "--memory", "pack"],
             "unknown option --memory",
         ),
+        // U23-F3: a session variable cannot be passed to the agent.
+        (
+            &["eval", "run", "--pass-env", "CLAUDECODE"],
+            "--pass-env CLAUDECODE",
+        ),
+        (&["eval", "ab", "--pass-env", "A=B"], "--pass-env \"A=B\""),
     ] {
         let output = memprove(empty.path(), words);
         assert_eq!(output.status.code(), Some(2), "{words:?}");
@@ -100,6 +106,7 @@ fn u23_w1_the_summary_line_counts_one_case_per_trial() {
             model: None,
             command: vec!["sh".to_owned()],
             extra_args: Vec::new(),
+            pass_env: Vec::new(),
         },
         agent_version: None,
         trials_per_task: 1,

@@ -145,6 +145,7 @@ mod tests {
             model: None,
             command: command.iter().map(|arg| (*arg).to_owned()).collect(),
             extra_args: extra_args.iter().map(|arg| (*arg).to_owned()).collect(),
+            pass_env: Vec::new(),
         }
     }
 

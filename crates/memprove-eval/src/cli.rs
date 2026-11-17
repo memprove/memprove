@@ -43,7 +43,8 @@ Usage:
   memprove eval init     [--agent claude-code|codex] [--no-workflow] [--dry-run]
   memprove eval mine     [--limit <N>] [--range <GIT_RANGE>] [--out <DIR>] [--verify] [--dry-run]
   memprove eval run      [<TASK_FILE | DIR>...] [--agent claude-code|codex|command] [--model <MODEL>]
-                         [--agent-arg <ARG>]... [--trials <N>] [--jobs <N>] [--out-root <DIR>]
+                         [--agent-arg <ARG>]... [--pass-env <NAME>]... [--trials <N>] [--jobs <N>]
+                         [--out-root <DIR>]
                          [--keep-worktrees] [--memory none|pack] [--no-memory]
                          [-- <PROGRAM> [<ARG>...]]
   memprove eval ab       [<TASK_FILE | DIR>...] [the options of run but --memory, --no-memory]
@@ -128,8 +129,8 @@ const HELP: &[Help] = &[
         name: "run",
         summary: "run the tasks with an agent and judge each by its check",
         usage: "memprove eval run [<TASK_FILE | DIR>...] [--agent claude-code|codex|command] [--model <MODEL>]\n\
-                \x20                 [--agent-arg <ARG>]... [--trials <N>] [--jobs <N>] [--out-root <DIR>]\n\
-                \x20                 [--keep-worktrees] [--memory none|pack] [--no-memory]\n\
+                \x20                 [--agent-arg <ARG>]... [--pass-env <NAME>]... [--trials <N>] [--jobs <N>]\n\
+                \x20                 [--out-root <DIR>] [--keep-worktrees] [--memory none|pack] [--no-memory]\n\
                 \x20                 [-- <PROGRAM> [<ARG>...]]",
         options: &[
             (
@@ -147,6 +148,10 @@ const HELP: &[Help] = &[
             (
                 "--agent-arg <ARG>",
                 "an argument passed to the agent as it is, repeatable",
+            ),
+            (
+                "--pass-env <NAME>",
+                "a variable of this environment the agent inherits besides the default list, repeatable",
             ),
             ("--trials <N>", "trials of each task, 1 to 100; default 1"),
             (
@@ -176,14 +181,17 @@ const HELP: &[Help] = &[
                 test's summary, one case per trial, so `memprove run --test-format cargo --\n\
                 memprove eval run` records the run as test Evidence. The agent's\n\
                 MEMPROVE_CONFIG_DIR is an empty directory, and its worktree has no memprove\n\
-                context, so it gets no Pack but the one --memory pack gives.",
+                context, so it gets no Pack but the one --memory pack gives. The agent inherits\n\
+                only a list of variables (the shell's, the toolchains', the proxies' and the\n\
+                model providers' login ones; docs/eval.md names them) and those of --pass-env:\n\
+                no session socket, token or identity of the caller reaches it.",
     },
     Help {
         name: "ab",
         summary: "run the tasks without memory and with memprove's Pack, and compare",
         usage: "memprove eval ab [<TASK_FILE | DIR>...] [--agent claude-code|codex|command] [--model <MODEL>]\n\
-                \x20                [--agent-arg <ARG>]... [--trials <N>] [--jobs <N>] [--out-root <DIR>]\n\
-                \x20                [--keep-worktrees] [-- <PROGRAM> [<ARG>...]]",
+                \x20                [--agent-arg <ARG>]... [--pass-env <NAME>]... [--trials <N>] [--jobs <N>]\n\
+                \x20                [--out-root <DIR>] [--keep-worktrees] [-- <PROGRAM> [<ARG>...]]",
         options: &[("<TASK_FILE | DIR> and the rest", "as for run")],
         notes: "memprove's memory is read once, before any trial; when it cannot be read, nothing\n\
                 runs. The first run gives the agent no memory, the second gives every trial that\n\
@@ -546,6 +554,7 @@ const RUN_OPTIONS: &[&str] = &[
     "--agent",
     "--model",
     "--agent-arg",
+    "--pass-env",
     "--trials",
     "--jobs",
     "--out-root",
@@ -567,6 +576,8 @@ fn prepare(args: &Args, cwd: &Path) -> Result<Prepared, EvalError> {
             kind.name()
         )));
     }
+    let pass_env = args.all("--pass-env");
+    crate::agent::check_pass_env(&pass_env)?;
     let root = git::toplevel(cwd)?;
     let paths: Vec<PathBuf> = if args.positionals.is_empty() {
         vec![PathBuf::from(DEFAULT_TASKS)]
@@ -582,6 +593,7 @@ fn prepare(args: &Args, cwd: &Path) -> Result<Prepared, EvalError> {
         model: args.one("--model")?.map(str::to_owned),
         command: args.trailing.clone(),
         extra_args: args.all("--agent-arg"),
+        pass_env,
     };
     let agent = agent_for(&spec)?;
     let options = RunOptions {

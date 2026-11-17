@@ -50,6 +50,9 @@ pub struct Invocation<'a> {
     pub env: &'a [(String, String)],
     /// Variables removed from the inherited environment.
     pub env_remove: &'a [String],
+    /// U23-F3: start from an empty environment instead of the inherited
+    /// one, so that `env` is the whole environment.
+    pub clear_env: bool,
     /// Where standard output goes.
     pub stdout: PathBuf,
     /// Where standard error goes.
@@ -92,6 +95,9 @@ pub fn run(invocation: &Invocation<'_>) -> Result<Finished, EvalError> {
         .stdout(stdout)
         .stderr(stderr)
         .process_group(0);
+    if invocation.clear_env {
+        command.env_clear();
+    }
     for name in invocation.env_remove {
         command.env_remove(name);
     }
@@ -153,6 +159,7 @@ mod tests {
             cwd: dir,
             env: &[("EVAL_TEST_VAR".to_owned(), "seen".to_owned())],
             env_remove: &[],
+            clear_env: false,
             stdout: dir.join("out"),
             stderr: dir.join("err"),
             timeout,
@@ -203,6 +210,7 @@ mod tests {
             cwd: dir.path(),
             env: &[],
             env_remove: &[],
+            clear_env: false,
             stdout: dir.path().join("out"),
             stderr: dir.path().join("err"),
             timeout: Duration::from_secs(1),

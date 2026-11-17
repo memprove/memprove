@@ -59,6 +59,15 @@ https://github.com/memprove/memprove/releases.
 
 ### Fixed
 
+- `memprove eval run` and `ab` passed their whole environment to the
+  agent under test, but for a list of session variables; run from a
+  Claude Code session, the agent got that session's messaging socket and
+  token, its ingress token file and the user's email, account and
+  organization. The agent now inherits only a list of variables (the
+  shell's, the network's, the model providers' login, the toolchains';
+  `docs/eval.md` names them) and those named with the new `--pass-env
+  NAME`, which `run.json` records; `--pass-env` refuses the session
+  variables. Setup and check commands are unchanged.
 - `docs/guide.md` said that `.cursor/rules/memprove.mdc` is committed;
   `init` puts it into `.git/info/exclude` with Cursor's other files, as
   it always has.

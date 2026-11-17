@@ -164,6 +164,7 @@ fn run(cwd: &Path, command: &CommandSpec, logs: &Path, name: &str) -> Result<Exi
         cwd,
         env: &[],
         env_remove: &[],
+        clear_env: false,
         stdout: logs.join(format!("{name}.out")),
         stderr: logs.join(format!("{name}.err")),
         timeout: command.timeout,

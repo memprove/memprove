@@ -10,7 +10,7 @@ if [ "$1" = "--version" ]; then
     exit 0
 fi
 for arg in "$@"; do printf 'arg: %s\n' "$arg" >&2; done
-env | grep -E '^(CLAUDE|MEMPROVE|CONTINUITY|CODEX|TRACEPARENT|U23_)' | sed 's/^/env: /' >&2
+env | grep -E '^(CLAUDE|MEMPROVE|CONTINUITY|CODEX|TRACEPARENT|U23_|ANTHROPIC_|SSH_AUTH_SOCK|GITHUB_TOKEN|LC_ALL)' | sed 's/^/env: /' >&2
 echo "Reading additional input from stdin..." >&2
 for prompt in "$@"; do :; done
 case "$prompt" in

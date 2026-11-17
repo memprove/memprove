@@ -166,6 +166,7 @@ mod tests {
             model: Some("gpt-5.5".to_owned()),
             command: Vec::new(),
             extra_args: vec!["-c".to_owned(), "model_reasoning_effort=high".to_owned()],
+            pass_env: Vec::new(),
         };
         let agent = Codex::new(&spec, "codex");
         assert_eq!(
