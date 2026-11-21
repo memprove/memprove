@@ -3,7 +3,15 @@
 Each release, with its binaries, is on
 https://github.com/memprove/memprove/releases.
 
-## Unreleased
+## 0.3.0 · 2026-11-21
+
+Adds four commands and two more clients: `memprove verify` checks that
+work an agent says is done is done, `memprove policy` gives Claude Code,
+Codex and Cursor one set of tool rules (with a scan for secrets and a
+gate for sessions that have read outside content), `memprove report`
+shows what one session cost and did, and `memprove import` reads the
+instruction files a repository already has. `memprove init` now also
+writes the session-start hook for Codex and Cursor and sets up TRAE.
 
 ### Added
 

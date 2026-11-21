@@ -211,11 +211,13 @@ writes nothing and sends nothing anywhere; `docs/report.md` has the rest.
 
 ## Status
 
-memprove 0.2.1 came out on 2026-11-16
-([release notes and binaries](https://github.com/memprove/memprove/releases/tag/v0.2.1));
-it corrects the `--dry-run` help of `memprove eval init` and
-`memprove eval mine`. 0.2.0, which added `memprove eval`, came out on
-2026-11-15, and 0.1.0, the first release, on 2026-11-14.
+memprove 0.3.0 came out on 2026-11-21
+([release notes and binaries](https://github.com/memprove/memprove/releases/tag/v0.3.0));
+it adds `memprove verify`, `memprove policy`, `memprove report` and
+`memprove import`, the session-start hook for Codex and Cursor, and
+TRAE. 0.2.1, a correction of help text, came out on 2026-11-16, 0.2.0,
+which added `memprove eval`, on 2026-11-15, and 0.1.0, the first
+release, on 2026-11-14.
 It is under active development. The ledger format, the control API
 (`openapi/control-api-v1.yaml`) and the Pack's line set are stable; the
 daemon has no network access by design. Linux on arm64 is not supported
