@@ -380,19 +380,38 @@ pub fn added_markers(
 }
 
 /// A new directory for one verification's index files and working copies,
-/// under the system's temporary directory.
+/// under the system's temporary directory. It is made anew: a directory of
+/// that name that is already there is another run's, and is never shared.
 ///
 /// # Errors
-/// When it cannot be created.
+/// When it cannot be created; with the kind `AlreadyExists` when a run of
+/// that name has one.
 pub fn scratch_dir(run_id: &str) -> Result<PathBuf, VerifyError> {
-    let dir = std::env::temp_dir().join(format!("memprove-verify-{run_id}"));
-    fs::create_dir_all(&dir).map_err(|error| VerifyError::io(&dir, error))?;
+    let parent = std::env::temp_dir();
+    fs::create_dir_all(&parent).map_err(|error| VerifyError::io(&parent, error))?;
+    let dir = parent.join(format!("memprove-verify-{run_id}"));
+    fs::create_dir(&dir).map_err(|error| VerifyError::io(&dir, error))?;
     Ok(dir)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_scratch_directory_is_made_anew_and_never_shared() {
+        let run_id = format!("test-{}-a-name-taken-twice", std::process::id());
+        let dir = scratch_dir(&run_id).expect("the first run gets the directory");
+        let second = scratch_dir(&run_id);
+        fs::remove_dir_all(&dir).expect("removed");
+        match second {
+            Err(VerifyError::Io { path, source }) => {
+                assert_eq!(path, dir);
+                assert_eq!(source.kind(), std::io::ErrorKind::AlreadyExists);
+            }
+            other => panic!("a second run was given the first run's directory: {other:?}"),
+        }
+    }
 
     #[test]
     fn reads_raw_entries() {
