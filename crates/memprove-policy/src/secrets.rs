@@ -37,6 +37,18 @@ pub struct Finding {
     pub value: String,
 }
 
+impl Finding {
+    /// The finding as it may be shown, without its value: `password in
+    /// PGPASSWORD: s3c…(12 characters)`.
+    #[must_use]
+    pub fn shown(&self) -> String {
+        match &self.name {
+            Some(name) => format!("{} in {name}: {}", self.kind, redacted(&self.value)),
+            None => format!("{}: {}", self.kind, redacted(&self.value)),
+        }
+    }
+}
+
 /// `value` as it may be shown: at most its first four characters (and never
 /// more than a quarter of it), then its length.
 #[must_use]

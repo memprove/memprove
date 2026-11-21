@@ -1,7 +1,9 @@
 //! The audit log: one JSON line for every call the policy refused or sent
 //! to a person, in `<git common dir>/memprove-policy/log.jsonl`, which is
-//! never committed. A command is kept to its first 200 characters, and a
-//! run of 32 or more token-like characters is replaced by `[redacted]`.
+//! never committed. A secret the detectors find in a command
+//! ([`crate::secrets`]) is written redacted, a run of 32 or more token-like
+//! characters is replaced by `[redacted]`, and a command is kept to its
+//! first 200 characters.
 
 use std::{
     fs::{self, OpenOptions},
@@ -11,7 +13,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::json;
+use crate::{json, secrets};
 
 /// The log's directory under the Git common directory.
 pub const LOG_DIR: &str = "memprove-policy";
@@ -27,8 +29,8 @@ pub struct Record {
     pub time: String,
     /// The client: `claude-code`, `codex` or `cursor`.
     pub client: String,
-    /// The tool of the deciding check: `Bash`, `Read`, `Edit` or `Mcp`
-    /// (or `-` when none decided).
+    /// The tool of the deciding check: `Bash`, `Read`, `Edit`, `Mcp` or
+    /// `Secret` (or `-` when none decided).
     pub tool: String,
     /// What was checked, shortened and redacted.
     pub subject: String,
@@ -88,10 +90,12 @@ impl Record {
     }
 }
 
-/// `subject` as the log keeps it: token-like runs redacted, then at most
-/// [`SUBJECT_CHARS`] characters.
+/// `subject` as the log keeps it: the secrets the detectors find in it
+/// redacted (`PGPASSWORD=h…(7 characters) psql`), token-like runs replaced,
+/// then at most [`SUBJECT_CHARS`] characters.
 #[must_use]
 pub fn redacted(subject: &str) -> String {
+    let subject = &secrets::hidden(subject, &secrets::in_command(subject));
     let mut out = String::new();
     let mut run = String::new();
     let flush = |run: &mut String, out: &mut String| {
@@ -284,6 +288,13 @@ mod tests {
             redacted(&"a ".repeat(150)).chars().count(),
             SUBJECT_CHARS + 1
         );
+        // A short password has no run of 32 characters: the detectors find
+        // it by where it stands.
+        assert_eq!(
+            redacted("PGPASSWORD=hunter2 psql -h db && sshpass -p 'tr0ub4dor' ssh host"),
+            "PGPASSWORD=h…(7 characters) psql -h db && sshpass -p 'tr…(9 characters)' ssh host"
+        );
+        assert_eq!(redacted("git push origin main"), "git push origin main");
     }
 
     #[test]

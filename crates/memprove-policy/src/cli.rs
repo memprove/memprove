@@ -48,7 +48,13 @@ The rules live in .memprove/policy.rules at the repository root, committed:
   deny  Read(.env*)
   deny  Edit(db/migrations/**)
   deny  Mcp(github.merge_pull_request)
+  ask   Secret(*)                 -- use an environment variable
   expect deny Bash(cd app && git push -f)
+
+`Secret(<kind>)` is about a secret written into a shell command
+(PGPASSWORD=hunter2 psql, sshpass -p ...) or into the text a call writes into
+a file; the kinds are password, private-key, jwt and the token formats
+(github-token, aws-access-key, ...), `*` every one.
 
 Before each tool call, Claude Code, Codex and Cursor run `memprove policy hook`,
 which decides the call by the first rule that matches, and refuses it or has a
@@ -262,7 +268,8 @@ fn policy_here() -> Result<(PathBuf, PathBuf, rules::Policy), u8> {
 
 fn call_of(tool: Tool, subject: &str) -> Call {
     match tool {
-        Tool::Bash => Call::Bash(subject.to_owned()),
+        // No call is a `Secret`: `rules::parse_call` refuses one.
+        Tool::Bash | Tool::Secret => Call::Bash(subject.to_owned()),
         Tool::Read => Call::Read(vec![subject.to_owned()]),
         Tool::Edit => Call::Edit(vec![subject.to_owned()]),
         Tool::Mcp => {
@@ -310,14 +317,14 @@ fn check(words: &[String]) -> u8 {
     for check in &verdict.checks {
         match &check.rule {
             Some(rule) => println!(
-                "  {:<5} {}  ->  {} by {} `{}`",
+                "  {:<6} {}  ->  {} by {} `{}`",
                 check.tool.name(),
                 check.subject,
                 rule.decision,
                 rule_source(rule),
                 rule.text()
             ),
-            None => println!("  {:<5} {}  ->  no rule", check.tool.name(), check.subject),
+            None => println!("  {:<6} {}  ->  no rule", check.tool.name(), check.subject),
         }
     }
     if let Some(problem) = &verdict.problem {

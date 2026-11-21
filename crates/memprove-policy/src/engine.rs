@@ -9,6 +9,8 @@ use crate::{
     commands::{self, PathUse, Place},
     glob,
     rules::{Decision, Policy, Rule, Tool},
+    scan,
+    secrets::{self, Finding},
 };
 
 /// The policy file, relative to the repository root.
@@ -63,6 +65,18 @@ pub enum Call {
     },
 }
 
+/// Text a call writes into a file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Written {
+    /// The file, as the call names it.
+    pub path: String,
+    /// The text: a whole file, or the part an edit puts in.
+    pub text: String,
+}
+
+/// The most text of one written file that is read for secrets, in bytes.
+pub const MAX_WRITTEN_BYTES: usize = 4 << 20;
+
 /// Where a call runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Site {
@@ -80,7 +94,7 @@ pub struct Check {
     /// The tool of the check.
     pub tool: Tool,
     /// What it touches: a command, a path (relative to the root when inside
-    /// it), or `server.tool`.
+    /// it), `server.tool`, or a secret as [`Finding::shown`] gives it.
     pub subject: String,
     /// The rule that decides it, if any.
     pub rule: Option<Rule>,
@@ -186,6 +200,34 @@ enum Subject {
     Command(String),
     Path(PathUse),
     Mcp(Option<String>, String),
+    Secret(Finding),
+}
+
+/// The secrets in the text a call writes into a file. One of the agents'
+/// own settings and instruction files (what `memprove policy scan` reads)
+/// is read as the scan reads it, commands and secret-named members too; any
+/// other file only for credentials of a known format, private keys and
+/// passwords in URLs, since source code is full of `password = …` lines
+/// that are no secret.
+fn secrets_written(written: &Written, place: &Site) -> Vec<Finding> {
+    let mut end = written.text.len().min(MAX_WRITTEN_BYTES);
+    while !written.text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let text = &written.text[..end];
+    let agent_file = commands::resolve(&written.path, &place.cwd, place.home.as_deref())
+        .is_some_and(|path| {
+            path.strip_prefix(&place.root)
+                .is_ok_and(scan::is_agent_path)
+        });
+    if !agent_file {
+        return secrets::in_text(text);
+    }
+    let mut found = Vec::new();
+    for hit in scan::in_file(&written.path, text) {
+        secrets::merge(&mut found, hit.finding);
+    }
+    found
 }
 
 /// `path` with its symbolic links resolved, as far as it exists (the rest
@@ -217,8 +259,15 @@ fn real_path(path: &Path, root: &Path, real_root: Option<&Path>) -> Option<PathB
 
 /// Decides `call` by `policy`.
 #[must_use]
-#[allow(clippy::too_many_lines)] // The checks of a call, then their decision.
 pub fn evaluate(policy: &Policy, call: &Call, place: &Site) -> Verdict {
+    evaluate_with(policy, call, &[], place)
+}
+
+/// Decides `call` by `policy`, with the text it writes into files, which
+/// `Secret` rules are also checked against.
+#[must_use]
+#[allow(clippy::too_many_lines)] // The checks of a call, then their decision.
+pub fn evaluate_with(policy: &Policy, call: &Call, written: &[Written], place: &Site) -> Verdict {
     let mut subjects: Vec<(Tool, Subject)> = Vec::new();
     let mut problem = None;
     let resolve = |word: &str| commands::resolve(word, &place.cwd, place.home.as_deref());
@@ -267,6 +316,22 @@ pub fn evaluate(policy: &Policy, call: &Call, place: &Site) -> Verdict {
             subjects.push((Tool::Mcp, Subject::Mcp(server.clone(), tool.clone())));
         }
     }
+    if policy.rules.iter().any(|rule| rule.tool == Tool::Secret) {
+        let mut found = match call {
+            Call::Bash(command) => secrets::in_command(command),
+            _ => Vec::new(),
+        };
+        for text in written {
+            for finding in secrets_written(text, place) {
+                secrets::merge(&mut found, finding);
+            }
+        }
+        subjects.extend(
+            found
+                .into_iter()
+                .map(|finding| (Tool::Secret, Subject::Secret(finding))),
+        );
+    }
     // A path is also checked where its links lead, so that a rule cannot
     // be passed by a link or by another name of the repository.
     let real_root = std::fs::canonicalize(&place.root).ok();
@@ -305,6 +370,7 @@ pub fn evaluate(policy: &Policy, call: &Call, place: &Site) -> Verdict {
                     Subject::Mcp(server, name) => {
                         mcp_matches(&rule.pattern, server.as_deref(), name)
                     }
+                    Subject::Secret(finding) => glob::text_matches(&rule.pattern, finding.kind),
                 }
         };
         let rule = built_in
@@ -323,6 +389,7 @@ pub fn evaluate(policy: &Policy, call: &Call, place: &Site) -> Verdict {
                 }
             }
             Subject::Mcp(server, name) => format!("{}.{name}", server.as_deref().unwrap_or("?")),
+            Subject::Secret(finding) => finding.shown(),
         };
         let check = Check {
             tool,
@@ -559,6 +626,114 @@ mod tests {
             Some(Decision::Deny)
         );
         assert_eq!(decide(Call::Read(vec!["README.md".to_owned()])), None);
+    }
+
+    /// A value no service ever issued.
+    fn made(prefix: &str, length: usize) -> String {
+        let body: String = "a1B2c3D4e5F6g7H8i9J0kLmNoPqRsTuVwXyZ"
+            .chars()
+            .cycle()
+            .take(length)
+            .collect();
+        format!("{prefix}{body}")
+    }
+
+    const SECRET_RULES: &str = "allow Secret(jwt)\n\
+        deny Secret(private-key)\n\
+        ask Secret(*) -- use an environment variable\n\
+        ask Bash(git push *)\n";
+
+    #[test]
+    fn a_secret_in_a_command_is_decided_by_the_rule_of_its_kind() {
+        let policy = parse(SECRET_RULES).unwrap();
+        let verdict = |command: &str| evaluate(&policy, &Call::Bash(command.to_owned()), &place());
+        let asked = verdict("cd app && PGPASSWORD=hunter2 psql -h db");
+        assert_eq!(asked.decision, Some(Decision::Ask));
+        let check = asked.deciding_check().unwrap();
+        assert_eq!(
+            (check.tool, check.subject.as_str()),
+            (Tool::Secret, "password in PGPASSWORD: h…(7 characters)")
+        );
+        assert_eq!(check.rule.as_ref().unwrap().line, 3);
+        assert_eq!(
+            verdict("bash -c 'sshpass -p tr0ub4dor ssh host uptime'").decision,
+            Some(Decision::Ask)
+        );
+        // What the shell fills in, and a placeholder, are no secret.
+        assert_eq!(verdict("PGPASSWORD=$DB_PASSWORD psql -h db").decision, None);
+        assert_eq!(verdict("mytool --token '<your token>'").decision, None);
+        assert_eq!(verdict("git status").decision, None);
+        // The first rule that matches the kind decides the secret.
+        let jwt = [made("eyJ", 17), made("eyJ", 21), made("", 30)].join(".");
+        assert_eq!(
+            verdict(&format!("curl -H 'X-Trace: {jwt}' https://x.internal")).decision,
+            Some(Decision::Allow)
+        );
+        // A policy with no Secret rule does not look for secrets.
+        let without = parse("ask Bash(git push *)\n").unwrap();
+        let verdict = evaluate(
+            &without,
+            &Call::Bash("PGPASSWORD=hunter2 psql".to_owned()),
+            &place(),
+        );
+        assert_eq!(verdict.decision, None);
+        assert!(
+            verdict
+                .checks
+                .iter()
+                .all(|check| check.tool != Tool::Secret)
+        );
+    }
+
+    #[test]
+    fn a_secret_in_the_text_a_call_writes_is_decided_too() {
+        let policy = parse(SECRET_RULES).unwrap();
+        let verdict = |path: &str, text: &str| {
+            evaluate_with(
+                &policy,
+                &Call::Edit(vec![path.to_owned()]),
+                &[Written {
+                    path: path.to_owned(),
+                    text: text.to_owned(),
+                }],
+                &place(),
+            )
+        };
+        // Source code is read for credentials of a known format only.
+        assert_eq!(
+            verdict("src/db.rs", "let password = \"hunter2\";\n").decision,
+            None
+        );
+        let token = made("ghp_", 36);
+        let found = verdict("src/db.rs", &format!("const TOKEN: &str = \"{token}\";\n"));
+        assert_eq!(found.decision, Some(Decision::Ask));
+        assert_eq!(
+            found.deciding_check().unwrap().subject,
+            "github-token: ghp_…(40 characters)"
+        );
+        assert_eq!(
+            verdict("deploy/id_ed25519", "-----BEGIN OPENSSH PRIVATE KEY-----\n").decision,
+            Some(Decision::Deny)
+        );
+        // The agents' own files are read as `policy scan` reads them.
+        let servers =
+            r#"{"mcpServers": {"db": {"command": "srv", "args": ["--db-password", "hunter2"]}}}"#;
+        let found = verdict(".mcp.json", servers);
+        assert_eq!(found.decision, Some(Decision::Ask));
+        assert_eq!(
+            found.deciding_check().unwrap().subject,
+            "password in --db-password: h…(7 characters)"
+        );
+        assert_eq!(verdict("config/servers.json", servers).decision, None);
+        assert_eq!(
+            verdict("CLAUDE.md", "Run `PGPASSWORD=hunter2 psql -h db` first.\n").decision,
+            Some(Decision::Ask)
+        );
+        // No text given: the path alone decides, as before.
+        assert_eq!(
+            evaluate(&policy, &Call::Edit(vec![".mcp.json".to_owned()]), &place()).decision,
+            None
+        );
     }
 
     #[test]
