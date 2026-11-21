@@ -83,6 +83,22 @@ https://github.com/memprove/memprove/releases.
   check` decides one call and names the deciding line, `policy test` runs
   the `expect` lines, and `policy log` shows the refusals and approvals
   asked for, logged in `<git common dir>/memprove-policy/log.jsonl`.
+- `memprove policy scan [--json] [<PATH>...]`: finds secrets in the files
+  coding agents write and read in a repository (`.claude/`, `.mcp.json`,
+  `.codex/`, `.cursor/`, `.trae/`, `CLAUDE.md`, `AGENTS.md` and the like,
+  or the paths given). It reads allowed commands and MCP commands as a
+  shell does and finds passwords written into them (`PGPASSWORD=… psql`,
+  `sshpass -p …`, `curl -u me:…`, `--token …`, `Authorization` headers,
+  `scheme://user:password@host`), literal values of secret-named keys in
+  `env` and `headers`, and credentials of a known format (cloud, Git
+  host, model provider, chat and payment keys, JSON Web Tokens, private
+  key blocks). Each finding is `file:line`, the kind, the name that holds
+  it, a redacted value and whether Git tracks the file; `--json` prints
+  `memprove.policy.scan.v1`. Exit 0 when nothing is found, 1 when
+  something is. It never prints a secret, checks none against a service
+  and sends nothing. Checked on a generated corpus of made-up values
+  (`crates/memprove-policy/tests/secrets_corpus.rs`); `docs/policy.md` has
+  the numbers and what they do not show.
 - `memprove report` (crate `memprove-report`): one local report per
   Claude Code or Codex session of the repository, read from the client's
   transcript (`~/.claude/projects/`, `~/.codex/sessions/`): requests and
