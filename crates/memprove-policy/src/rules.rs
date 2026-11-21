@@ -6,6 +6,7 @@
 //! ask   Bash(git push *)
 //! deny  Read(.env*)
 //! allow Edit(db/migrations/README.md)
+//! ask   Secret(*)                 -- use an environment variable
 //! expect deny Bash(cd app && git push -f)
 //! ```
 
@@ -63,6 +64,10 @@ pub enum Tool {
     Edit,
     /// An MCP tool, by `server.tool`.
     Mcp,
+    /// A secret in a shell command or in the text a call writes into a
+    /// file, by its kind ([`crate::secrets::KINDS`]). A rule's tool only: no
+    /// call is a `Secret`.
+    Secret,
 }
 
 impl Tool {
@@ -74,6 +79,7 @@ impl Tool {
             Self::Read => "Read",
             Self::Edit => "Edit",
             Self::Mcp => "Mcp",
+            Self::Secret => "Secret",
         }
     }
 
@@ -86,6 +92,7 @@ impl Tool {
             "read" => Some(Self::Read),
             "edit" | "write" => Some(Self::Edit),
             "mcp" => Some(Self::Mcp),
+            "secret" => Some(Self::Secret),
             _ => None,
         }
     }
@@ -101,7 +108,7 @@ pub struct Rule {
     /// What it is about.
     pub tool: Tool,
     /// Its pattern: for `Bash` with whitespace runs as one space and `:*`
-    /// as ` *`; for `Mcp` as `server.tool`.
+    /// as ` *`; for `Mcp` as `server.tool`; for `Secret` in lower case.
     pub pattern: String,
     /// The text after `--`, for the agent and the person.
     pub reason: Option<String>,
@@ -231,7 +238,7 @@ fn tool_call(text: &str) -> Result<(Tool, &str), String> {
     let name = text[..open].trim();
     let tool = Tool::parse(name).ok_or_else(|| {
         format!(
-            "the tool is Bash, Read, Edit or Mcp, not `{}`",
+            "the tool is Bash, Read, Edit, Mcp or Secret, not `{}`",
             shorten(name, 40)
         )
     })?;
@@ -245,6 +252,7 @@ pub fn normalize(tool: Tool, pattern: &str) -> String {
         Tool::Bash => crate::glob::command_pattern(pattern),
         Tool::Read | Tool::Edit => pattern.trim().to_owned(),
         Tool::Mcp => mcp_name(pattern.trim()),
+        Tool::Secret => pattern.trim().to_ascii_lowercase(),
     }
 }
 
@@ -289,6 +297,17 @@ fn parse_rule(text: &str) -> Result<(Tool, String, Option<String>), String> {
     if pattern.is_empty() {
         return Err("the pattern is empty".to_owned());
     }
+    if tool == Tool::Secret
+        && !crate::secrets::KINDS
+            .iter()
+            .any(|kind| crate::glob::text_matches(&pattern, kind))
+    {
+        return Err(format!(
+            "no kind of secret is `{}`; the kinds are {} (`*` is every kind)",
+            shorten(&pattern, 40),
+            crate::secrets::KINDS.join(", ")
+        ));
+    }
     let tail = after[close + 1..].trim();
     let reason = tail
         .strip_prefix("--")
@@ -323,6 +342,13 @@ pub fn parse_call(text: &str) -> Result<(Tool, String), String> {
     let subject = after[..close].trim();
     if subject.is_empty() {
         return Err("the call is empty".to_owned());
+    }
+    if tool == Tool::Secret {
+        return Err(
+            "`Secret` is a rule, not a call: give the command that holds the secret, as in \
+             Bash(PGPASSWORD=hunter2 psql)"
+                .to_owned(),
+        );
     }
     let subject = if tool == Tool::Mcp {
         mcp_name(subject)
@@ -389,6 +415,34 @@ mod tests {
         assert!(errors[1].message.contains("`Run`"));
         assert!(errors[2].message.contains("not closed"));
         assert!(errors[3].message.contains("empty"));
+    }
+
+    #[test]
+    fn secret_rules_name_a_kind_and_no_call_is_a_secret() {
+        let policy = parse(
+            "ask Secret(*) -- use an environment variable\n\
+             deny secret( Private-Key )\n\
+             allow Secret(*-token)\n",
+        )
+        .unwrap();
+        let texts: Vec<String> = policy.rules.iter().map(Rule::text).collect();
+        assert_eq!(
+            texts,
+            vec![
+                "ask Secret(*)",
+                "deny Secret(private-key)",
+                "allow Secret(*-token)"
+            ]
+        );
+        let errors = parse("ask Secret(pasword)\nexpect ask Secret(password)\n").unwrap_err();
+        assert!(
+            errors[0].message.contains("no kind of secret is `pasword`")
+                && errors[0].message.contains("private-key"),
+            "{}",
+            errors[0].message
+        );
+        assert!(errors[1].message.contains("`Secret` is a rule, not a call"));
+        assert!(parse_call("Secret(password)").is_err());
     }
 
     #[test]

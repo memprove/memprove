@@ -350,6 +350,147 @@ fn each_clients_handler_answers_in_that_clients_form() {
     );
 }
 
+/// The starter policy's `ask Secret(*)`: a password written into a command
+/// and a token written into a file each need a person, the answer and the
+/// log name the secret without holding it, and what the shell fills in is
+/// left alone. Every secret here is made up in this file.
+#[test]
+#[allow(clippy::too_many_lines)] // One ordered scenario: the hook, the log, check, scan.
+fn a_secret_in_a_command_or_a_written_file_needs_a_person_and_is_never_repeated() {
+    let (_guard, repo) = repo();
+    let init = memprove(&repo, &["policy", "init", "--client", "claude-code"]);
+    assert_eq!(init.status.code(), Some(0), "{}", text(&init.stderr));
+    let root = repo.display().to_string();
+    let claude = commands_of(
+        &read_json(&repo.join(".claude/settings.local.json")),
+        "PreToolUse",
+    )
+    .remove(0);
+    let project: [(&str, &Path); 1] = [("CLAUDE_PROJECT_DIR", &repo)];
+    let password = "tr0ub4dor";
+    let token: String = "ghp_"
+        .chars()
+        .chain(
+            "a1B2c3D4e5F6g7H8i9J0kLmNoPqRsTuVwXyZ"
+                .chars()
+                .cycle()
+                .take(36),
+        )
+        .collect();
+
+    let bash = |command: &str| {
+        format!(
+            r#"{{"session_id":"s","cwd":"{root}","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{{"command":"{command}"}},"tool_use_id":"t"}}"#
+        )
+    };
+    let answer = run_handler(
+        &repo,
+        &claude,
+        &bash(&format!(
+            "cd app && PGPASSWORD={password} psql -h db.internal"
+        )),
+        &project,
+    );
+    let (decision, reason) = decision_of(&answer);
+    assert_eq!(decision, "ask");
+    assert!(
+        reason.starts_with(
+            "memprove policy: a secret in this call (password in PGPASSWORD: tr…(9 characters)) \
+             needs a person's approval (.memprove/policy.rules:38 `ask Secret(*)`)"
+        ),
+        "{reason}"
+    );
+    assert!(!answer.contains(password));
+    assert_eq!(
+        run_handler(
+            &repo,
+            &claude,
+            &bash(r#"PGPASSWORD=\"$DB_PASSWORD\" psql -h db.internal"#),
+            &project
+        ),
+        ""
+    );
+
+    let write = format!(
+        r#"{{"cwd":"{root}","tool_name":"Write","tool_input":{{"file_path":"{root}/src/config.ts","content":"export const token = \"{token}\";\n"}}}}"#
+    );
+    let answer = run_handler(&repo, &claude, &write, &project);
+    let (decision, reason) = decision_of(&answer);
+    assert_eq!(decision, "ask");
+    assert!(
+        reason.contains("(github-token: ghp_…(40 characters))"),
+        "{reason}"
+    );
+    assert!(!answer.contains(&token));
+    let harmless = format!(
+        r#"{{"cwd":"{root}","tool_name":"Write","tool_input":{{"file_path":"{root}/src/config.ts","content":"export const token = process.env.GITHUB_TOKEN;\n"}}}}"#
+    );
+    assert_eq!(run_handler(&repo, &claude, &harmless, &project), "");
+
+    let log = memprove(&repo, &["policy", "log"]);
+    assert_eq!(log.status.code(), Some(0));
+    let out = text(&log.stdout);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 2, "{out}");
+    assert!(
+        lines[0].contains("  ask  claude-code  Secret password in PGPASSWORD: tr…(9 characters)  "),
+        "{out}"
+    );
+    assert!(
+        lines[1].contains("  ask  claude-code  Secret github-token: ghp_…(40 characters)  "),
+        "{out}"
+    );
+    let raw = fs::read_to_string(repo.join(".git/memprove-policy/log.jsonl")).unwrap();
+    assert!(!raw.contains(password) && !raw.contains(&token), "{raw}");
+
+    let check = memprove(
+        &repo,
+        &[
+            "policy",
+            "check",
+            "--client",
+            "codex",
+            &format!("Bash(sshpass -p {password} ssh deploy@host uptime)"),
+        ],
+    );
+    assert_eq!(check.status.code(), Some(1));
+    let out = text(&check.stdout);
+    assert!(
+        out.contains(
+            "  Secret password in sshpass -p: tr…(9 characters)  ->  ask by \
+             .memprove/policy.rules:38 `ask Secret(*)`"
+        ),
+        "{out}"
+    );
+    assert!(out.contains("Codex cannot ask from a hook"), "{out}");
+    assert_eq!(
+        memprove(&repo, &["policy", "check", "Secret(password)"])
+            .status
+            .code(),
+        Some(2)
+    );
+
+    // The starter policy's own `expect` line is a test, not a finding; a
+    // rule that holds a password is one.
+    let scan = memprove(&repo, &["policy", "scan", ".memprove"]);
+    assert_eq!(scan.status.code(), Some(0), "{}", text(&scan.stdout));
+    let policy = repo.join(".memprove/policy.rules");
+    let rules = fs::read_to_string(&policy).unwrap();
+    fs::write(
+        &policy,
+        format!("{rules}allow Bash(PGPASSWORD={password} psql:*)\n"),
+    )
+    .unwrap();
+    let scan = memprove(&repo, &["policy", "scan", ".memprove"]);
+    assert_eq!(scan.status.code(), Some(1));
+    let out = text(&scan.stdout);
+    assert!(
+        out.contains(".memprove/policy.rules:49: password in PGPASSWORD: tr…(9 characters)"),
+        "{out}"
+    );
+    assert!(!out.contains(password));
+}
+
 #[test]
 fn check_and_test_read_the_same_policy() {
     let (_guard, repo) = repo();
@@ -365,7 +506,7 @@ fn check_and_test_read_the_same_policy() {
 
     let test = memprove(&repo, &["policy", "test"]);
     assert_eq!(test.status.code(), Some(0), "{}", text(&test.stdout));
-    assert!(text(&test.stdout).ends_with("7 passed, 0 failed\n"));
+    assert!(text(&test.stdout).ends_with("9 passed, 0 failed\n"));
 
     let deny = memprove(
         &repo,
@@ -412,7 +553,7 @@ fn check_and_test_read_the_same_policy() {
     fs::write(&policy, &text_of_policy).unwrap();
     let failing = memprove(&repo, &["policy", "test"]);
     assert_eq!(failing.status.code(), Some(1));
-    assert!(text(&failing.stdout).contains("FAIL  line 41: expect allow Bash(git push origin main): got ask by .memprove/policy.rules:30 `ask Bash(git push *)`"), "{}", text(&failing.stdout));
+    assert!(text(&failing.stdout).contains("FAIL  line 49: expect allow Bash(git push origin main): got ask by .memprove/policy.rules:34 `ask Bash(git push *)`"), "{}", text(&failing.stdout));
 
     fs::write(&policy, "deny Bash(x\n").unwrap();
     let broken = memprove(&repo, &["policy", "test"]);

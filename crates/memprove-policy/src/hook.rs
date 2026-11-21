@@ -25,7 +25,7 @@ use std::{
 use memprove_protocol::strict_json::{JsonLimits, parse_strict_with_limits};
 
 use crate::{
-    engine::{self, Call, POLICY_FILE, Site, Verdict},
+    engine::{self, Call, POLICY_FILE, Site, Verdict, Written},
     json::{self, JsonValue},
     log::{self, Record},
     rules::{self, Decision, Policy, Tool},
@@ -114,6 +114,8 @@ enum Form {
 /// The call of an event, how to answer it, and where it runs.
 struct Event {
     call: Option<Call>,
+    /// The text the call writes into files, where the client gives it.
+    written: Vec<Written>,
     form: Form,
     cwd: Option<PathBuf>,
     /// The directory the repository is looked for from.
@@ -135,6 +137,59 @@ fn path_of(input: &JsonValue) -> Option<String> {
         ],
     )
     .map(str::to_owned)
+}
+
+/// The text a file tool's input writes: a whole file (`content`), what an
+/// edit puts in (`new_string`, each of `edits`), or a notebook cell
+/// (`new_source`).
+fn written_of(input: &JsonValue) -> Vec<Written> {
+    let Some(path) = path_of(input) else {
+        return Vec::new();
+    };
+    let mut texts: Vec<&str> = ["content", "contents", "new_string", "new_source"]
+        .iter()
+        .filter_map(|name| json::str_at(input, name))
+        .collect();
+    if let Some(edits) = input.get("edits").and_then(JsonValue::as_array) {
+        texts.extend(
+            edits
+                .iter()
+                .filter_map(|edit| json::str_at(edit, "new_string")),
+        );
+    }
+    if texts.is_empty() {
+        return Vec::new();
+    }
+    vec![Written {
+        path,
+        text: texts.join("\n"),
+    }]
+}
+
+/// The lines an `apply_patch` patch adds, file by file.
+#[must_use]
+pub fn patch_written(patch: &str) -> Vec<Written> {
+    let mut written: Vec<Written> = Vec::new();
+    for line in patch.lines() {
+        let file = ["*** Add File: ", "*** Update File: ", "*** Move to: "]
+            .iter()
+            .find_map(|prefix| line.strip_prefix(prefix));
+        if let Some(path) = file {
+            written.push(Written {
+                path: path.trim().to_owned(),
+                text: String::new(),
+            });
+        } else if line.starts_with("*** ") {
+            // A deleted file, or the patch's own first and last lines.
+        } else if let Some(added) = line.strip_prefix('+')
+            && let Some(current) = written.last_mut()
+        {
+            current.text.push_str(added);
+            current.text.push('\n');
+        }
+    }
+    written.retain(|file| !file.path.is_empty() && !file.text.is_empty());
+    written
 }
 
 fn mcp_call(name: &str) -> Option<Call> {
@@ -250,6 +305,7 @@ fn event_of(client: Client, value: &JsonValue, env: &HookEnv) -> Event {
     match client {
         Client::ClaudeCode if cursor_shaped => Event {
             call: cursor_tool_call(tool, tool_input),
+            written: written_of(tool_input),
             form: Form::Nested {
                 can_ask: false,
                 silent: false,
@@ -262,6 +318,7 @@ fn event_of(client: Client, value: &JsonValue, env: &HookEnv) -> Event {
         },
         Client::ClaudeCode => Event {
             call: claude_call(tool, tool_input),
+            written: written_of(tool_input),
             form: Form::Nested {
                 can_ask: true,
                 silent: true,
@@ -272,6 +329,13 @@ fn event_of(client: Client, value: &JsonValue, env: &HookEnv) -> Event {
         },
         Client::Codex => Event {
             call: codex_call(tool, tool_input),
+            written: if tool == "apply_patch" {
+                json::first_str(tool_input, &["command", "input", "patch"])
+                    .map(patch_written)
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            },
             form: Form::Nested {
                 can_ask: false,
                 silent: true,
@@ -304,6 +368,11 @@ fn event_of(client: Client, value: &JsonValue, env: &HookEnv) -> Event {
             };
             Event {
                 call,
+                written: if event == "preToolUse" {
+                    written_of(tool_input)
+                } else {
+                    Vec::new()
+                },
                 form: Form::Permission { can_ask },
                 cwd: cwd_of(value).or_else(|| first_workspace_root(value)),
                 start: project
@@ -381,6 +450,7 @@ fn subject_words(tool: Tool, subject: &str) -> String {
         Tool::Read => format!("reading `{subject}`"),
         Tool::Edit => format!("changing `{subject}`"),
         Tool::Mcp => format!("the MCP tool `{subject}`"),
+        Tool::Secret => format!("a secret in this call ({subject})"),
     }
 }
 
@@ -516,7 +586,14 @@ pub fn answer(client: Client, input: &[u8], env: &HookEnv) -> Answer {
     };
     let cannot_ask = (!can_ask(form)).then(|| client.title());
     let (verdict, broken) = match load_policy(&root) {
-        Ok(policy) => (engine::evaluate(&policy, &call, &site), None),
+        Ok(policy) => {
+            // Only a call that changes files writes text into them.
+            let written: &[Written] = match &call {
+                Call::Edit(_) => &event.written,
+                _ => &[],
+            };
+            (engine::evaluate_with(&policy, &call, written, &site), None)
+        }
         Err(why) => (
             Verdict {
                 decision: Some(Decision::Ask),
@@ -771,8 +848,156 @@ mod tests {
         );
     }
 
+    /// A token of GitHub's format that GitHub never issued.
+    fn made_token() -> String {
+        let body: String = "a1B2c3D4e5F6g7H8i9J0kLmNoPqRsTuVwXyZ"
+            .chars()
+            .cycle()
+            .take(36)
+            .collect();
+        format!("ghp_{body}")
+    }
+
+    #[test]
+    fn a_secret_in_a_command_is_asked_about_and_never_repeated() {
+        let repo =
+            Repo::new("ask Secret(*) -- use an environment variable\ndeny Bash(sshpass *)\n");
+        let asked = repo.ask(
+            Client::ClaudeCode,
+            r#"{"cwd":"ROOT","tool_name":"Bash","tool_input":{"command":"PGPASSWORD=hunter2 psql -h db"}}"#,
+        );
+        assert!(asked.stdout.contains("\"permissionDecision\":\"ask\""));
+        assert!(
+            asked
+                .stdout
+                .contains("a secret in this call (password in PGPASSWORD: h"),
+            "{}",
+            asked.stdout
+        );
+        assert!(
+            asked
+                .stdout
+                .contains("`ask Secret(*)`): use an environment variable.")
+        );
+        assert!(!asked.stdout.contains("hunter2"));
+        let record = asked.record.unwrap().1;
+        assert_eq!(
+            (record.tool.as_str(), record.subject.as_str(), record.line),
+            (
+                "Secret",
+                "password in PGPASSWORD: h…(7 characters)",
+                Some(1)
+            )
+        );
+        // Codex cannot ask, so the call is refused.
+        let codex = repo.ask(
+            Client::Codex,
+            r#"{"cwd":"ROOT","tool_name":"Bash","tool_input":{"command":["bash","-lc","curl -u deploy:tr0ub4dor https://x.internal"]}}"#,
+        );
+        assert!(codex.stdout.contains("\"permissionDecision\":\"deny\""));
+        assert!(codex.stdout.contains("Codex cannot ask from a hook"));
+        // A command another rule refuses is logged without its password.
+        let denied = repo.ask(
+            Client::ClaudeCode,
+            r#"{"cwd":"ROOT","tool_name":"Bash","tool_input":{"command":"sshpass -p tr0ub4dor ssh host"}}"#,
+        );
+        let record = denied.record.unwrap().1;
+        assert_eq!(
+            (record.tool.as_str(), record.subject.as_str()),
+            ("Bash", "sshpass -p tr…(9 characters) ssh host")
+        );
+        let none = repo.ask(
+            Client::ClaudeCode,
+            r#"{"cwd":"ROOT","tool_name":"Bash","tool_input":{"command":"PGPASSWORD=\"$DB_PASSWORD\" psql -h db"}}"#,
+        );
+        assert_eq!(none, Answer::default());
+    }
+
+    #[test]
+    fn a_secret_in_the_text_a_call_writes_is_asked_about() {
+        let repo = Repo::new("deny Secret(private-key)\nask Secret(*)\n");
+        let token = made_token();
+        let write = repo.ask(
+            Client::ClaudeCode,
+            &format!(
+                r#"{{"cwd":"ROOT","tool_name":"Write","tool_input":{{"file_path":"ROOT/src/config.ts","content":"export const token = \"{token}\";\n"}}}}"#
+            ),
+        );
+        assert!(write.stdout.contains("\"permissionDecision\":\"ask\""));
+        assert!(!write.stdout.contains(&token));
+        let record = write.record.unwrap().1;
+        assert_eq!(
+            (record.tool.as_str(), record.subject.as_str()),
+            ("Secret", "github-token: ghp_…(40 characters)")
+        );
+        let edit = repo.ask(
+            Client::ClaudeCode,
+            r#"{"cwd":"ROOT","tool_name":"Edit","tool_input":{"file_path":"ROOT/deploy/key","old_string":"x","new_string":"-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n"}}"#,
+        );
+        assert!(edit.stdout.contains("\"permissionDecision\":\"deny\""));
+        let multi = repo.ask(
+            Client::ClaudeCode,
+            &format!(
+                r#"{{"cwd":"ROOT","tool_name":"MultiEdit","tool_input":{{"file_path":"ROOT/a.py","edits":[{{"old_string":"a","new_string":"b"}},{{"old_string":"c","new_string":"T = '{token}'"}}]}}}}"#
+            ),
+        );
+        assert!(multi.stdout.contains("\"permissionDecision\":\"ask\""));
+        // What an edit takes out is not written.
+        let removes = repo.ask(
+            Client::ClaudeCode,
+            &format!(
+                r#"{{"cwd":"ROOT","tool_name":"Edit","tool_input":{{"file_path":"ROOT/a.py","old_string":"T = '{token}'","new_string":"T = os.environ['TOKEN']"}}}}"#
+            ),
+        );
+        assert_eq!(removes, Answer::default());
+        // Codex's patch: the lines it adds, not the ones it removes.
+        let patch = |sign: char| {
+            repo.ask(
+                Client::Codex,
+                &format!(
+                    r#"{{"cwd":"ROOT","tool_name":"apply_patch","tool_input":{{"command":"*** Begin Patch\n*** Update File: a.py\n@@\n{sign}T = '{token}'\n*** End Patch\n"}}}}"#
+                ),
+            )
+        };
+        let added = patch('+');
+        assert!(added.stdout.contains("\"permissionDecision\":\"deny\""));
+        assert!(added.stdout.contains("Codex cannot ask from a hook"));
+        assert_eq!(patch('-').stdout, "");
+        // Cursor's file writes cannot ask either.
+        let cursor = repo.ask(
+            Client::Cursor,
+            &format!(
+                r#"{{"hook_event_name":"preToolUse","cursor_version":"2","tool_name":"Write","tool_input":{{"file_path":"ROOT/a.py","content":"T = '{token}'"}},"workspace_roots":["ROOT"]}}"#
+            ),
+        );
+        assert!(cursor.stdout.starts_with("{\"permission\":\"deny\""));
+        // A file that is read is not a file that is written.
+        let read = repo.ask(
+            Client::Cursor,
+            &format!(
+                r#"{{"hook_event_name":"beforeReadFile","cursor_version":"2","file_path":"ROOT/a.py","content":"T = '{token}'","workspace_roots":["ROOT"]}}"#
+            ),
+        );
+        assert_eq!(read.stdout, "{\"permission\":\"allow\"}");
+    }
+
     #[test]
     fn patches_name_their_files() {
+        assert_eq!(
+            patch_written(
+                "*** Begin Patch\n*** Update File: a.rs\n@@ fn main\n-old\n+new one\n context\n*** Add File: b.txt\n+x\n+y\n*** Delete File: c.rs\n*** Update File: d.rs\n*** Move to: e.rs\n-z\n*** End Patch"
+            ),
+            vec![
+                Written {
+                    path: "a.rs".to_owned(),
+                    text: "new one\n".to_owned()
+                },
+                Written {
+                    path: "b.txt".to_owned(),
+                    text: "x\ny\n".to_owned()
+                },
+            ]
+        );
         assert_eq!(
             patch_paths(
                 "*** Begin Patch\n*** Update File: a.rs\n*** Move to: b.rs\n*** Delete File: c.rs\n*** End Patch"

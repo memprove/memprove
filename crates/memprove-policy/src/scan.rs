@@ -60,6 +60,13 @@ pub const AGENT_PATHS: &[&str] = &[
     "GEMINI.md",
 ];
 
+/// Whether `relative`, a path below the repository root, is one of the
+/// files a scan reads when no path is given, or is below one.
+#[must_use]
+pub fn is_agent_path(relative: &Path) -> bool {
+    AGENT_PATHS.iter().any(|agent| relative.starts_with(agent))
+}
+
 /// Directories never entered.
 const SKIPPED_DIRS: &[&str] = &[".git", "node_modules", "target"];
 
@@ -408,11 +415,28 @@ fn is_shell(name: &str, text: &str) -> bool {
 /// The credentials of a text that is not JSON, line by line.
 fn in_lines(name: &str, text: &str) -> Vec<Hit> {
     let shell = is_shell(name, text);
+    let policy_file = Path::new(name)
+        .file_name()
+        .is_some_and(|file| file == "policy.rules");
     let mut fenced = false;
     let mut hits = Vec::new();
     for (index, line) in text.lines().enumerate() {
         let trimmed = line.trim();
         let mut found = Vec::new();
+        if policy_file {
+            // In a policy file an `expect` line is a test, its secret made
+            // up, and a `Bash(…)` rule is read as the command it matches.
+            if trimmed.split_whitespace().next() == Some("expect") {
+                continue;
+            }
+            if let Ok(policy) = crate::rules::parse(trimmed) {
+                for rule in &policy.rules {
+                    if rule.tool == crate::rules::Tool::Bash {
+                        merge(&mut found, secrets::in_command(&rule.pattern));
+                    }
+                }
+            }
+        }
         if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
             fenced = !fenced;
         } else if shell || fenced {
@@ -782,6 +806,25 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn a_policy_files_rules_are_read_as_commands_and_its_expect_lines_are_not() {
+        let text = "ask Secret(*) -- use an environment variable\n\
+                    allow Bash(PGPASSWORD=tr0ub4dor psql:*) -- the staging database\n\
+                    expect ask Bash(PGPASSWORD=hunter2 psql -h db.internal)\n";
+        assert_eq!(
+            seen(&in_file(".memprove/policy.rules", text)),
+            [(2, None, "password", Some("PGPASSWORD"), "tr0ub4dor")]
+        );
+        assert_eq!(
+            in_file(".memprove/policy.rules", crate::starter::STARTER),
+            []
+        );
+        assert!(is_agent_path(Path::new(".claude/settings.local.json")));
+        assert!(is_agent_path(Path::new("CLAUDE.md")));
+        assert!(!is_agent_path(Path::new("src/CLAUDE.md")));
+        assert!(!is_agent_path(Path::new(".claudeignore")));
     }
 
     /// A value no service ever issued.

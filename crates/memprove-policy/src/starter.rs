@@ -6,7 +6,7 @@ pub const STARTER: &str = "\
 # Claude Code, Codex and Cursor check each tool call against this file
 # before it runs. Commit it.
 #
-#   <deny|ask|allow> <Bash|Read|Edit|Mcp>(<pattern>)  [-- what the agent is told]
+#   <deny|ask|allow> <Bash|Read|Edit|Mcp|Secret>(<pattern>)  [-- what the agent is told]
 #
 # Bash matches each command of a command line (`cd x && git push -f` is two),
 # also inside `bash -c`, `$(...)`, `sudo`, `env`, `xargs` and `find -exec`.
@@ -15,6 +15,10 @@ pub const STARTER: &str = "\
 # commands that read or change the file (`cat .env`, `> file`, `rm -r db`).
 # Mcp matches `server.tool` (`github.merge_*`, or `github` for all of them).
 # `*` matches anything (in paths, inside one directory), `**` any directories.
+# Secret matches the kind of a secret written into a command or into a file
+# (`*`, `password`, `private-key`, `github-token`): `PGPASSWORD=... psql`,
+# `sshpass -p ...`, a key pasted into a config file. `$PGPASSWORD` is not one.
+# `memprove policy scan` finds the ones already in the agents' own files.
 #
 # The first rule that matches decides; a command line gets the strictest
 # decision of its commands. `allow` only stops later rules from matching: it
@@ -35,6 +39,8 @@ ask   Bash(git push *)
 ask   Bash(npm publish *)
 ask   Bash(cargo publish *)
 
+ask   Secret(*)                    -- keep secrets out of commands and files: use an environment variable
+
 expect deny  Read(.env)
 expect allow Read(.env.example)
 expect deny  Bash(cat config/.env.local)
@@ -42,4 +48,6 @@ expect deny  Bash(cd app && git push origin main --force)
 expect deny  Bash(git push -f)
 expect ask   Bash(git push origin feature/x)
 expect allow Bash(git status)
+expect ask   Bash(PGPASSWORD=hunter2 psql -h db.internal)
+expect allow Bash(psql -h db.internal -U \"$PGUSER\")
 ";
