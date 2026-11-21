@@ -5,6 +5,7 @@ use std::{
     fmt::Write as _,
     fs,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
     time::SystemTime,
 };
 
@@ -177,8 +178,24 @@ pub fn plan(options: &Options) -> Result<Planned, VerifyError> {
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default()
         .subsec_millis();
-    let run_id = format!("{}-{millis:03}-{}", time::compact(started), nonce(started));
-    let scratch = snapshot::scratch_dir(&run_id)?;
+    // Two runs can start at the same instant, in one process too (a clock
+    // that counts in microseconds gives two threads the same one): each
+    // takes a name of its own, and a name whose directory is already there
+    // is another run's.
+    let mut taken = 0;
+    let (run_id, scratch) = loop {
+        let run_id = format!("{}-{millis:03}-{}", time::compact(started), nonce(started));
+        match snapshot::scratch_dir(&run_id) {
+            Ok(scratch) => break (run_id, scratch),
+            Err(VerifyError::Io { source, .. })
+                if source.kind() == std::io::ErrorKind::AlreadyExists
+                    && taken < MAX_TAKEN_NAMES =>
+            {
+                taken += 1;
+            }
+            Err(error) => return Err(error),
+        }
+    };
     let planned = plan_in(options, started, head, run_id, &scratch);
     if !matches!(planned, Ok(Planned::Ready(_))) {
         let _ = fs::remove_dir_all(&scratch);
@@ -651,12 +668,48 @@ pub fn resolve_run_dir(out_root: &Path, name: Option<&str>) -> Result<PathBuf, V
     }
 }
 
+/// How many names that are already taken a run passes over before it gives
+/// up.
+const MAX_TAKEN_NAMES: u32 = 16;
+
+/// How many names this process has made: two runs it starts at the same
+/// instant still get different ones.
+static NAMES_MADE: AtomicU64 = AtomicU64::new(0);
+
 /// Six hex digits that make two runs started in the same second differ.
 fn nonce(now: SystemTime) -> String {
     let nanos = now
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let digest = Sha256::digest(format!("{nanos}-{}", std::process::id()).as_bytes());
+    nonce_of(
+        nanos,
+        std::process::id(),
+        NAMES_MADE.fetch_add(1, Ordering::Relaxed),
+    )
+}
+
+/// The digits for an instant, a process and the count of names it has made.
+fn nonce_of(nanos: u128, process: u32, made: u64) -> String {
+    let digest = Sha256::digest(format!("{nanos}-{process}-{made}").as_bytes());
     crate::hex(&digest[..3])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn two_runs_of_one_instant_in_one_process_get_different_names() {
+        // What the macOS CI showed: its clock counts in microseconds, two
+        // tests started a run in the same one, and both were given the
+        // same name and so the same scratch directory.
+        let instant = 1_795_277_770_123_456_000;
+        assert_ne!(nonce_of(instant, 685, 0), nonce_of(instant, 685, 1));
+        assert_ne!(nonce_of(instant, 685, 0), nonce_of(instant, 686, 0));
+        let before = NAMES_MADE.load(Ordering::Relaxed);
+        let now = SystemTime::now();
+        let (_first, _second) = (nonce(now), nonce(now));
+        assert!(NAMES_MADE.load(Ordering::Relaxed) >= before + 2);
+    }
 }
