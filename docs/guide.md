@@ -682,7 +682,11 @@ give a new session, and reports the change in pass rate task by task; `--memory 
 `deny Read(.env*)` and `deny Edit(db/migrations/**)`; before each tool call, Claude Code, Codex and Cursor run
 `memprove policy hook`, and the first rule that matches decides. When a call is refused, the reason names the line of
 the policy that refused it: do not try the same thing another way; tell the user, who can run it or change the policy.
-An agent's change to the policy file or to a client's hook settings always needs a person. `memprove policy check
+An agent's change to the policy file or to a client's hook settings always needs a person. A `Secret` rule
+(`ask Secret(*)` in the starter file) objects to a secret written into a command or a file, such as
+`PGPASSWORD=hunter2 psql` or a token pasted into a config file: pass it through the environment (`$PGPASSWORD`)
+instead, and do not split or encode it to get past the rule. `memprove policy scan` lists the secrets already in the
+agents' settings and instruction files, by file, line and kind, without their values. `memprove policy check
 'Bash(<command>)'` shows which line decides a call before you make it, `memprove policy test` runs the file's `expect`
 lines, and `memprove policy init` writes a starter file and the hooks. `docs/policy.md` is the manual.
 
