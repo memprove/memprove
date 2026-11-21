@@ -7,7 +7,10 @@
 //! deny  Read(.env*)
 //! allow Edit(db/migrations/README.md)
 //! ask   Secret(*)                 -- use an environment variable
+//! taint Web(*)
+//! tainted ask Bash(curl *)        -- only once a taint line has marked the session
 //! expect deny Bash(cd app && git push -f)
+//! expect tainted ask Bash(curl https://example.com)
 //! ```
 
 use std::fmt;
@@ -64,6 +67,9 @@ pub enum Tool {
     Edit,
     /// An MCP tool, by `server.tool`.
     Mcp,
+    /// A client's own web tool: a fetch by its URL, a search as
+    /// `search:<query>`.
+    Web,
     /// A secret in a shell command or in the text a call writes into a
     /// file, by its kind ([`crate::secrets::KINDS`]). A rule's tool only: no
     /// call is a `Secret`.
@@ -79,6 +85,7 @@ impl Tool {
             Self::Read => "Read",
             Self::Edit => "Edit",
             Self::Mcp => "Mcp",
+            Self::Web => "Web",
             Self::Secret => "Secret",
         }
     }
@@ -92,6 +99,7 @@ impl Tool {
             "read" => Some(Self::Read),
             "edit" | "write" => Some(Self::Edit),
             "mcp" => Some(Self::Mcp),
+            "web" | "webfetch" | "websearch" => Some(Self::Web),
             "secret" => Some(Self::Secret),
             _ => None,
         }
@@ -112,13 +120,41 @@ pub struct Rule {
     pub pattern: String,
     /// The text after `--`, for the agent and the person.
     pub reason: Option<String>,
+    /// A `tainted` rule: it exists only in a session a [`Taint`] line has
+    /// marked.
+    pub tainted: bool,
 }
 
 impl Rule {
     /// The rule as a policy file would hold it, without its reason.
     #[must_use]
     pub fn text(&self) -> String {
-        format!("{} {}({})", self.decision, self.tool.name(), self.pattern)
+        let rule = format!("{} {}({})", self.decision, self.tool.name(), self.pattern);
+        if self.tainted {
+            format!("tainted {rule}")
+        } else {
+            rule
+        }
+    }
+}
+
+/// One `taint` line: a call that matches it marks its session as having
+/// read content nobody here wrote. It decides no call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Taint {
+    /// Its line in the file.
+    pub line: usize,
+    /// The tool of the calls it matches.
+    pub tool: Tool,
+    /// Its pattern, as a rule of that tool holds it.
+    pub pattern: String,
+}
+
+impl Taint {
+    /// The line as a policy file would hold it.
+    #[must_use]
+    pub fn text(&self) -> String {
+        format!("taint {}({})", self.tool.name(), self.pattern)
     }
 }
 
@@ -129,6 +165,8 @@ pub struct Expectation {
     pub line: usize,
     /// The decision expected; `allow` also accepts no decision.
     pub decision: Decision,
+    /// `expect tainted …`: the call is decided as in a marked session.
+    pub tainted: bool,
     /// The call's tool.
     pub tool: Tool,
     /// The call's command, path or MCP tool.
@@ -142,6 +180,17 @@ pub struct Policy {
     pub rules: Vec<Rule>,
     /// Its `expect` lines, in order.
     pub expectations: Vec<Expectation>,
+    /// Its `taint` lines, in order.
+    pub taints: Vec<Taint>,
+}
+
+impl Policy {
+    /// Whether sessions matter to this policy: it has a `taint` line or a
+    /// `tainted` rule.
+    #[must_use]
+    pub fn follows_sessions(&self) -> bool {
+        !self.taints.is_empty() || self.rules.iter().any(|rule| rule.tainted)
+    }
 }
 
 /// A line the policy file cannot hold.
@@ -178,14 +227,49 @@ pub fn parse(text: &str) -> Result<Policy, Vec<LineError>> {
         }
         let (first, rest) = split_word(trimmed);
         let parsed = if first == "expect" {
-            parse_expectation(rest).map(|(decision, tool, subject)| {
+            parse_expectation(rest).map(|(tainted, decision, tool, subject)| {
                 policy.expectations.push(Expectation {
                     line,
                     decision,
+                    tainted,
                     tool,
                     subject,
                 });
             })
+        } else if first == "taint" {
+            parse_rule(rest).and_then(|(tool, pattern, _)| {
+                if tool == Tool::Secret {
+                    return Err(
+                        "a taint line names what the session reads, as in taint Web(*) or taint \
+                         Mcp(*), not a Secret"
+                            .to_owned(),
+                    );
+                }
+                policy.taints.push(Taint {
+                    line,
+                    tool,
+                    pattern,
+                });
+                Ok(())
+            })
+        } else if first == "tainted" {
+            let (word, rest) = split_word(rest);
+            match Decision::parse(word) {
+                Some(decision) => parse_rule(rest).map(|(tool, pattern, reason)| {
+                    policy.rules.push(Rule {
+                        line,
+                        decision,
+                        tool,
+                        pattern,
+                        reason,
+                        tainted: true,
+                    });
+                }),
+                None => Err(
+                    "`tainted` is followed by deny, ask or allow, then a rule such as Bash(curl *)"
+                        .to_owned(),
+                ),
+            }
         } else if let Some(decision) = Decision::parse(first) {
             parse_rule(rest).map(|(tool, pattern, reason)| {
                 policy.rules.push(Rule {
@@ -194,11 +278,12 @@ pub fn parse(text: &str) -> Result<Policy, Vec<LineError>> {
                     tool,
                     pattern,
                     reason,
+                    tainted: false,
                 });
             })
         } else {
             Err(format!(
-                "a line starts with deny, ask, allow or expect, not `{}`",
+                "a line starts with deny, ask, allow, taint, tainted or expect, not `{}`",
                 shorten(first, 40)
             ))
         };
@@ -238,7 +323,7 @@ fn tool_call(text: &str) -> Result<(Tool, &str), String> {
     let name = text[..open].trim();
     let tool = Tool::parse(name).ok_or_else(|| {
         format!(
-            "the tool is Bash, Read, Edit, Mcp or Secret, not `{}`",
+            "the tool is Bash, Read, Edit, Mcp, Web or Secret, not `{}`",
             shorten(name, 40)
         )
     })?;
@@ -250,7 +335,7 @@ fn tool_call(text: &str) -> Result<(Tool, &str), String> {
 pub fn normalize(tool: Tool, pattern: &str) -> String {
     match tool {
         Tool::Bash => crate::glob::command_pattern(pattern),
-        Tool::Read | Tool::Edit => pattern.trim().to_owned(),
+        Tool::Read | Tool::Edit | Tool::Web => pattern.trim().to_owned(),
         Tool::Mcp => mcp_name(pattern.trim()),
         Tool::Secret => pattern.trim().to_ascii_lowercase(),
     }
@@ -317,14 +402,21 @@ fn parse_rule(text: &str) -> Result<(Tool, String, Option<String>), String> {
     Ok((tool, pattern, reason))
 }
 
-fn parse_expectation(text: &str) -> Result<(Decision, Tool, String), String> {
+fn parse_expectation(text: &str) -> Result<(bool, Decision, Tool, String), String> {
     let (word, rest) = split_word(text);
+    let (tainted, word, rest) = if word == "tainted" {
+        let (word, rest) = split_word(rest);
+        (true, word, rest)
+    } else {
+        (false, word, rest)
+    };
     let decision = Decision::parse(word).ok_or_else(|| {
-        "`expect` is followed by deny, ask or allow, then a call such as Bash(git push -f)"
+        "`expect` is followed by deny, ask or allow (after `tainted`, for a marked session), \
+         then a call such as Bash(git push -f)"
             .to_owned()
     })?;
     let (tool, subject) = parse_call(rest)?;
-    Ok((decision, tool, subject))
+    Ok((tainted, decision, tool, subject))
 }
 
 /// A call as `check` and `expect` take it: `Tool(subject)`, the subject up
@@ -399,6 +491,7 @@ mod tests {
             vec![Expectation {
                 line: 9,
                 decision: Decision::Deny,
+                tainted: false,
                 tool: Tool::Bash,
                 subject: "echo (x) && git push -f".to_owned(),
             }]
@@ -443,6 +536,55 @@ mod tests {
         );
         assert!(errors[1].message.contains("`Secret` is a rule, not a call"));
         assert!(parse_call("Secret(password)").is_err());
+    }
+
+    #[test]
+    fn taint_lines_and_tainted_rules_are_read() {
+        let policy = parse(
+            "taint Web(*)\n\
+             taint mcp(mcp__linear__get_issue) -- issue text is written by anyone\n\
+             tainted ask Bash(curl:*) -- a page may have asked for this\n\
+             tainted deny WebFetch(*)\n\
+             deny Web(http://*)\n\
+             expect tainted ask Bash(curl https://example.com)\n\
+             expect allow Bash(curl https://example.com)\n",
+        )
+        .unwrap();
+        let taints: Vec<String> = policy.taints.iter().map(Taint::text).collect();
+        assert_eq!(taints, vec!["taint Web(*)", "taint Mcp(linear.get_issue)"]);
+        assert_eq!(policy.taints[1].line, 2);
+        let rules: Vec<String> = policy.rules.iter().map(Rule::text).collect();
+        assert_eq!(
+            rules,
+            vec![
+                "tainted ask Bash(curl *)",
+                "tainted deny Web(*)",
+                "deny Web(http://*)"
+            ]
+        );
+        assert_eq!(
+            policy.rules[0].reason.as_deref(),
+            Some("a page may have asked for this")
+        );
+        let expected: Vec<(bool, Decision)> = policy
+            .expectations
+            .iter()
+            .map(|expectation| (expectation.tainted, expectation.decision))
+            .collect();
+        assert_eq!(
+            expected,
+            vec![(true, Decision::Ask), (false, Decision::Allow)]
+        );
+        assert!(policy.follows_sessions());
+        assert!(!parse("deny Bash(x)\n").unwrap().follows_sessions());
+
+        let errors =
+            parse("taint Secret(*)\ntainted Bash(curl *)\ntaint\nexpect tainted Bash(x)\n")
+                .unwrap_err();
+        let lines: Vec<usize> = errors.iter().map(|error| error.line).collect();
+        assert_eq!(lines, vec![1, 2, 3, 4]);
+        assert!(errors[0].message.contains("not a Secret"));
+        assert!(errors[1].message.contains("`tainted` is followed by"));
     }
 
     #[test]
