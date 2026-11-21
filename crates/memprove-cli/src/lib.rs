@@ -245,11 +245,13 @@ Completion check (memprove verify --help):
                  Stop hook that keeps an agent working while a check fails
 
 Agent tool policy (memprove policy --help):
-  policy init | check | test | log | hook
+  policy init | check | test | log | scan | hook
                  one set of tool rules in .memprove/policy.rules for Claude Code,
                  Codex and Cursor: before each tool call their hook refuses the
                  call or has a person approve it when a rule says so; decided
-                 locally from the call's text; `test` runs the file's expect lines
+                 locally from the call's text; `test` runs the file's expect lines;
+                 `scan` finds the secrets agents left in their settings and
+                 instruction files, such as a password in an allowed command
 
 Agent session report (memprove report --help):
   report [<SESSION>] | --list | --transcript <FILE>

@@ -19,6 +19,8 @@ pub mod hook;
 pub mod json;
 pub mod log;
 pub mod rules;
+pub mod scan;
+pub mod secrets;
 pub mod shell;
 pub mod starter;
 
