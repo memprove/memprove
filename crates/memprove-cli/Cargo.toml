@@ -16,6 +16,7 @@ memprove-domain = { path = "../memprove-domain" }
 memprove-eval = { path = "../memprove-eval" }
 memprove-policy = { path = "../memprove-policy" }
 memprove-protocol = { path = "../memprove-protocol" }
+memprove-report = { path = "../memprove-report" }
 memprove-store-sqlite = { path = "../memprove-store-sqlite" }
 memprove-verify = { path = "../memprove-verify" }
 sha2.workspace = true

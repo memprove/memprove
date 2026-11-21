@@ -83,6 +83,18 @@ https://github.com/memprove/memprove/releases.
   check` decides one call and names the deciding line, `policy test` runs
   the `expect` lines, and `policy log` shows the refusals and approvals
   asked for, logged in `<git common dir>/memprove-policy/log.jsonl`.
+- `memprove report` (crate `memprove-report`): one local report per
+  Claude Code or Codex session of the repository, read from the client's
+  transcript (`~/.claude/projects/`, `~/.codex/sessions/`): requests and
+  tokens per model with the cost estimated at list prices (Anthropic's
+  built in, others from `--prices <FILE>`), tool calls per tool and the
+  failed ones (Claude Code), the calls `memprove policy` refused or sent
+  to a person while the session ran, and the memprove statements the
+  agent read (hook Pack, MCP tools, `memprove` commands) with the facts
+  that were not verified when read; `--now` also names the facts read as
+  verified that are not verified now. `--list`, `--json`
+  (`memprove.report.session.v1`, `memprove.report.list.v1`). Reads files
+  only; writes nothing.
 
 ### Fixed
 
