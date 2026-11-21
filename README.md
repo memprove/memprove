@@ -181,6 +181,14 @@ and `memprove policy test` runs the `expect` lines in CI.
 `memprove policy init` writes a starter file and each client's hook;
 `docs/policy.md` has the rest.
 
+`memprove policy scan` finds the secrets agents have already left in
+their own files: the password inside a command you allowed once
+(`Bash(PGPASSWORD=… psql …)` in `.claude/settings.local.json`), the API key
+in an MCP entry's `env`, the token quoted in `CLAUDE.md`. It names the
+file, the line and the kind, never the value, and says whether Git tracks
+the file. It runs locally, needs no policy file and exits 1 when it finds
+one, so it fits CI.
+
 ## What a session cost, did and read
 
 `memprove report` reads one Claude Code or Codex session of this
