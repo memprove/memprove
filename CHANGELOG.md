@@ -115,6 +115,22 @@ https://github.com/memprove/memprove/releases.
   secrets the detectors find in a logged command (before, only runs of
   32 or more token-like characters). `policy check` aligns its tool
   column one character wider.
+- `memprove policy` gate against prompt injection: a `taint
+  <Tool>(<pattern>)` line decides nothing, and a call that matches it
+  marks its session (the client's `session_id`, Cursor's
+  `conversation_id`) in `<git common dir>/memprove-policy/taint/`,
+  unless the call is refused; a `tainted <deny|ask|allow> ...` rule
+  exists only in a marked session, from the next call on, and its answer
+  names the call that marked the session. A mark stays for the session
+  and is removed after 30 days. New rule tool `Web(<url>)` /
+  `Web(search:<query>)` for Claude Code's `WebFetch` and `WebSearch`,
+  which the Claude Code hook `policy init` writes now also runs for (run
+  `policy init` again after upgrading). `expect tainted ...` and `policy
+  check --tainted` test a call as in a marked session; `policy log`
+  shows a marking as a `taint` row. The starter policy holds a gate as
+  comments, off by default. Codex's own web search runs no hook, so
+  `Web` never matches there. Tested with each client's documented hook
+  input; real clients NOT RUN.
 - `memprove report` (crate `memprove-report`): one local report per
   Claude Code or Codex session of the repository, read from the client's
   transcript (`~/.claude/projects/`, `~/.codex/sessions/`): requests and

@@ -191,6 +191,13 @@ one, so it fits CI. The rule `ask Secret(*)`, in the starter file, has a
 person approve a call that writes a new one: the agent is told to pass the
 secret through the environment instead.
 
+Against prompt injection, `taint` lines mark a session once it has read
+content from outside (`taint Web(*)`, `taint Mcp(*)`), and `tainted` rules
+apply only to marked sessions (`tainted ask Bash(curl *)`): after the
+agent has read a web page, what could send data out needs a person. No
+model judges the page; the same calls get the same answers. The starter
+file holds this gate as comments.
+
 ## What a session cost, did and read
 
 `memprove report` reads one Claude Code or Codex session of this
