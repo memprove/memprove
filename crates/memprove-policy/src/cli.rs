@@ -9,12 +9,13 @@ use std::{
 };
 
 use crate::{
-    engine::{self, Call, POLICY_FILE, Site},
+    engine::{self, Call, Extra, POLICY_FILE, Site},
     hook::{self, Client, HookEnv},
     log,
     rules::{self, Decision, Tool},
     scan,
     starter::STARTER,
+    taint,
 };
 
 /// Exit code: done; for `check`, no rule refuses the call or asks; for
@@ -35,7 +36,7 @@ pub const USAGE: &str =
 
 Usage:
   memprove policy init  [--client claude-code|codex|cursor]... [--dry-run]
-  memprove policy check '<Tool>(<subject>)' [--client claude-code|codex|cursor]
+  memprove policy check [--tainted] '<Tool>(<subject>)' [--client claude-code|codex|cursor]
   memprove policy test
   memprove policy log   [--last <N>]
   memprove policy scan  [--json] [<PATH>...]
@@ -56,6 +57,17 @@ The rules live in .memprove/policy.rules at the repository root, committed:
 a file; the kinds are password, private-key, jwt and the token formats
 (github-token, aws-access-key, ...), `*` every one.
 
+A session that has read content from outside can be held to stricter rules:
+
+  taint Web(*)                    # a call that matches marks its session
+  taint Mcp(*)
+  tainted ask  Bash(curl *)       # a rule only in a marked session
+  tainted ask  Web(*)
+  expect tainted ask Bash(curl https://example.com)
+
+`Web(<url>)` is the client's own fetch tool, `Web(search:<query>)` its search.
+A `taint` line decides no call; a mark stays for the rest of the session.
+
 Before each tool call, Claude Code, Codex and Cursor run `memprove policy hook`,
 which decides the call by the first rule that matches, and refuses it or has a
 person approve it. Nothing is sent anywhere; refusals and approvals asked for
@@ -65,7 +77,9 @@ are logged in <git common dir>/memprove-policy/log.jsonl.
          hook of each client (detected, or named with --client)
   check  decides one call and shows which line decides it, as in
          check 'Bash(cd app && git push -f)', check 'Read(.env)',
-         check 'Edit(db/migrations/001.sql)', check 'Mcp(github.merge_pull_request)'
+         check 'Edit(db/migrations/001.sql)', check 'Mcp(github.merge_pull_request)',
+         check 'Web(https://example.com)'; --tainted decides it as in a marked
+         session
   test   checks every `expect` line of the policy file (for CI)
   log    shows the last refusals and approvals asked for (20 unless --last)
   scan   looks for secrets in the files agents write and read here: their
@@ -272,6 +286,7 @@ fn call_of(tool: Tool, subject: &str) -> Call {
         Tool::Bash | Tool::Secret => Call::Bash(subject.to_owned()),
         Tool::Read => Call::Read(vec![subject.to_owned()]),
         Tool::Edit => Call::Edit(vec![subject.to_owned()]),
+        Tool::Web => Call::Web(subject.to_owned()),
         Tool::Mcp => {
             let (server, name) = subject.split_once('.').unwrap_or(("*", subject));
             Call::Mcp {
@@ -295,7 +310,12 @@ fn check(words: &[String]) -> u8 {
         Ok(taken) => taken,
         Err(error) => return usage_error(&error),
     };
-    let [call] = other.as_slice() else {
+    let tainted = other.iter().any(|word| *word == "--tainted");
+    let calls: Vec<&String> = other
+        .into_iter()
+        .filter(|word| *word != "--tainted")
+        .collect();
+    let [call] = calls.as_slice() else {
         return usage_error("check takes one call, as in check 'Bash(git push -f)'");
     };
     let (tool, subject) = match rules::parse_call(call) {
@@ -311,9 +331,18 @@ fn check(words: &[String]) -> u8 {
         cwd,
         home: home(),
     };
-    let verdict = engine::evaluate(&policy, &call_of(tool, &subject), &site);
+    let extra = Extra {
+        written: &[],
+        tainted,
+    };
+    let verdict = engine::evaluate_with(&policy, &call_of(tool, &subject), extra, &site);
     let word = verdict.decision.map_or("no rule", Decision::word);
-    println!("{word}: {}({subject})", tool.name());
+    let session = if tainted {
+        " (in a marked session)"
+    } else {
+        ""
+    };
+    println!("{word}: {}({subject}){session}", tool.name());
     for check in &verdict.checks {
         match &check.rule {
             Some(rule) => println!(
@@ -330,6 +359,15 @@ fn check(words: &[String]) -> u8 {
     if let Some(problem) = &verdict.problem {
         println!("  not read in full: {problem}; a command not read in full needs a person");
     }
+    if let Some(marked) = &verdict.taint {
+        println!(
+            "  marks the session: {} {} matches {POLICY_FILE}:{} `{}`",
+            marked.tool.name(),
+            marked.subject,
+            marked.taint.line,
+            marked.taint.text()
+        );
+    }
     let client = clients.first().copied().unwrap_or(Client::ClaudeCode);
     match verdict.decision {
         Some(Decision::Deny | Decision::Ask) => {
@@ -337,7 +375,7 @@ fn check(words: &[String]) -> u8 {
             println!(
                 "{} is told: {}",
                 client.title(),
-                hook::reason(&verdict, cannot_ask)
+                hook::reason(&verdict, cannot_ask, None)
             );
             EXIT_FAILED
         }
@@ -364,9 +402,13 @@ fn test(words: &[String]) -> u8 {
     };
     let mut failed = 0usize;
     for expectation in &policy.expectations {
-        let verdict = engine::evaluate(
+        let verdict = engine::evaluate_with(
             &policy,
             &call_of(expectation.tool, &expectation.subject),
+            Extra {
+                written: &[],
+                tainted: expectation.tainted,
+            },
             &site,
         );
         let holds = match expectation.decision {
@@ -376,8 +418,9 @@ fn test(words: &[String]) -> u8 {
             expected => verdict.decision == Some(expected),
         };
         let line = format!(
-            "line {}: expect {} {}({})",
+            "line {}: expect {}{} {}({})",
             expectation.line,
+            if expectation.tainted { "tainted " } else { "" },
             expectation.decision,
             expectation.tool.name(),
             expectation.subject
@@ -555,6 +598,31 @@ fn run_hook(words: &[String]) -> u8 {
     {
         eprintln!("memprove policy: warning: the decision was not logged: {error}");
     }
+    if let Some((root, session, mark)) = &answer.mark {
+        match taint::write(root, session, mark) {
+            // The log says when, and by which call, a session was marked.
+            Ok(true) => {
+                let record = log::Record {
+                    time: mark.time.clone(),
+                    client: mark.client.clone(),
+                    tool: mark.tool.clone(),
+                    subject: mark.subject.clone(),
+                    decision: "taint".to_owned(),
+                    sent: "taint".to_owned(),
+                    line: Some(mark.line),
+                    rule: Some(mark.rule.clone()),
+                };
+                if let Err(error) = log::append(root, &record) {
+                    eprintln!("memprove policy: warning: the mark was not logged: {error}");
+                }
+            }
+            Ok(false) => {}
+            Err(error) => eprintln!(
+                "memprove policy: warning: the session was not marked: {error}; its `tainted` \
+                 rules do not apply"
+            ),
+        }
+    }
     let mut stdout = std::io::stdout().lock();
     let _ = stdout.write_all(answer.stdout.as_bytes());
     if !answer.stdout.is_empty() {
@@ -568,19 +636,23 @@ fn run_hook(words: &[String]) -> u8 {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_starter_policy_reads_and_its_expectations_hold() {
-        let policy = rules::parse(STARTER).unwrap();
-        assert!(policy.rules.len() >= 8);
+    /// Reads `text` as a policy and checks each of its `expect` lines; the
+    /// numbers of its rules, `taint` lines and expectations.
+    fn expectations_hold(text: &str) -> (usize, usize, usize) {
+        let policy = rules::parse(text).unwrap();
         let site = Site {
             root: PathBuf::from("/repo"),
             cwd: PathBuf::from("/repo"),
             home: Some(PathBuf::from("/home/me")),
         };
         for expectation in &policy.expectations {
-            let verdict = engine::evaluate(
+            let verdict = engine::evaluate_with(
                 &policy,
                 &call_of(expectation.tool, &expectation.subject),
+                Extra {
+                    written: &[],
+                    tainted: expectation.tainted,
+                },
                 &site,
             );
             let holds = match expectation.decision {
@@ -591,6 +663,27 @@ mod tests {
             };
             assert!(holds, "line {}: {:?}", expectation.line, verdict);
         }
+        (
+            policy.rules.len(),
+            policy.taints.len(),
+            policy.expectations.len(),
+        )
+    }
+
+    #[test]
+    fn the_starter_policy_reads_and_its_expectations_hold() {
+        assert_eq!(expectations_hold(STARTER), (10, 0, 9));
+        // The gate against prompt injection is in the file as comments:
+        // with the `# ` before its lines removed, it reads and holds too.
+        let mut with_gate = String::new();
+        for line in STARTER.lines() {
+            let on = ["# taint", "# expect "]
+                .iter()
+                .any(|start| line.starts_with(start));
+            with_gate.push_str(if on { &line[2..] } else { line });
+            with_gate.push('\n');
+        }
+        assert_eq!(expectations_hold(&with_gate), (14, 2, 11));
     }
 
     #[test]

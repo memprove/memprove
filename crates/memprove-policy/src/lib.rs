@@ -23,6 +23,7 @@ pub mod scan;
 pub mod secrets;
 pub mod shell;
 pub mod starter;
+pub mod taint;
 
 pub use engine::{Call, Check, POLICY_FILE, Site, Verdict, evaluate};
 pub use hook::Client;

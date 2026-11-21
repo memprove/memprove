@@ -2822,8 +2822,10 @@ pub fn install_trae_hooks(
 }
 
 /// The tools Claude Code's `PreToolUse` handler of `memprove policy` runs
-/// for: the shell, file reads and changes, and MCP tools.
-pub const POLICY_CLAUDE_MATCHER: &str = "Bash|Read|Write|Edit|MultiEdit|NotebookEdit|Grep|mcp__.*";
+/// for: the shell, file reads and changes, web fetches and searches, and
+/// MCP tools.
+pub const POLICY_CLAUDE_MATCHER: &str =
+    "Bash|Read|Write|Edit|MultiEdit|NotebookEdit|Grep|WebFetch|WebSearch|mcp__.*";
 
 /// The tools Codex's `PreToolUse` handler of `memprove policy` runs for.
 pub const POLICY_CODEX_MATCHER: &str = "Bash|apply_patch|mcp__.*";
