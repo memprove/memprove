@@ -35,6 +35,7 @@ pub mod init;
 pub mod mcp;
 pub mod policy_install;
 pub mod preview;
+pub mod report_now;
 pub mod resume;
 pub mod run;
 
@@ -249,6 +250,14 @@ Agent tool policy (memprove policy --help):
                  Codex and Cursor: before each tool call their hook refuses the
                  call or has a person approve it when a rule says so; decided
                  locally from the call's text; `test` runs the file's expect lines
+
+Agent session report (memprove report --help):
+  report [<SESSION>] | --list | --transcript <FILE>
+                 one Claude Code or Codex session of this repository, read from
+                 its transcript on this machine: tokens and estimated cost per
+                 model, tool calls, the calls memprove policy refused or sent to
+                 a person, and the memprove statements the agent read, with the
+                 facts that were not verified; writes nothing
 
 Install and maintenance:
   init [--client <claude-code|codex|cursor|trae>]... [--operator-token <FILE>] [--allow-tools] [--dry-run]

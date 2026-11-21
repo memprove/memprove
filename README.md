@@ -181,6 +181,17 @@ and `memprove policy test` runs the `expect` lines in CI.
 `memprove policy init` writes a starter file and each client's hook;
 `docs/policy.md` has the rest.
 
+## What a session cost, did and read
+
+`memprove report` reads one Claude Code or Codex session of this
+repository from the client's own transcript on this machine and says
+what it cost (tokens per model, estimated at list prices), which tools
+it called and how many failed, which calls `memprove policy` refused or
+sent to a person, and which memprove statements the agent read, with the
+facts that were not verified when it read them. `memprove report --list`
+shows the last sessions, and `--json` gives the same for scripts. It
+writes nothing and sends nothing anywhere; `docs/report.md` has the rest.
+
 ## Status
 
 memprove 0.2.1 came out on 2026-11-16

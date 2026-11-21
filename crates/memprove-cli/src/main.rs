@@ -106,6 +106,26 @@ fn policy(args: &[std::ffi::OsString]) -> Option<ExitCode> {
     )))
 }
 
+/// `memprove report ...` is parsed and run by the `memprove-report` crate,
+/// which only reads transcripts and the policy log; the CLI gives it, for
+/// `--now`, the statements memprove would give a new session (read-only).
+/// `None` for every other command.
+fn report(args: &[std::ffi::OsString]) -> Option<ExitCode> {
+    let (first, rest) = args.split_first()?;
+    if first != "report" {
+        return None;
+    }
+    let words: Vec<String> = rest
+        .iter()
+        .map(|word| word.to_string_lossy().into_owned())
+        .collect();
+    let present = memprove_cli::report_now::DaemonStatements;
+    Some(ExitCode::from(memprove_report::cli::main(
+        &words,
+        Some(&present),
+    )))
+}
+
 /// U24 (I1): `memprove import ...`, read here; the parser answers only
 /// `import --help`. `None` for every other command.
 fn import(args: &[std::ffi::OsString]) -> Option<ExitCode> {
@@ -361,6 +381,9 @@ fn main() -> ExitCode {
         return code;
     }
     if let Some(code) = eval(&args).or_else(|| verify(&args)) {
+        return code;
+    }
+    if let Some(code) = report(&args) {
         return code;
     }
     if let Some(code) = import(&args) {
