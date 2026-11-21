@@ -13,19 +13,20 @@ use crate::{
     hook::{self, Client, HookEnv},
     log,
     rules::{self, Decision, Tool},
+    scan,
     starter::STARTER,
 };
 
 /// Exit code: done; for `check`, no rule refuses the call or asks; for
-/// `test`, every expectation holds.
+/// `test`, every expectation holds; for `scan`, no secret is found.
 pub const EXIT_OK: u8 = 0;
 /// Exit code: for `check`, the call is refused or needs a person; for
-/// `test`, an expectation does not hold.
+/// `test`, an expectation does not hold; for `scan`, a secret is found.
 pub const EXIT_FAILED: u8 = 1;
 /// Exit code: a usage error.
 pub const EXIT_USAGE: u8 = 2;
-/// Exit code: the policy file is missing or cannot be read, or a file
-/// cannot be written.
+/// Exit code: the policy file is missing or cannot be read, a file cannot
+/// be written, or a path given to `scan` does not exist.
 pub const EXIT_ERROR: u8 = 3;
 
 /// `memprove policy --help`.
@@ -37,6 +38,7 @@ Usage:
   memprove policy check '<Tool>(<subject>)' [--client claude-code|codex|cursor]
   memprove policy test
   memprove policy log   [--last <N>]
+  memprove policy scan  [--json] [<PATH>...]
   memprove policy hook  --client claude-code|codex|cursor
 
 The rules live in .memprove/policy.rules at the repository root, committed:
@@ -60,13 +62,24 @@ are logged in <git common dir>/memprove-policy/log.jsonl.
          check 'Edit(db/migrations/001.sql)', check 'Mcp(github.merge_pull_request)'
   test   checks every `expect` line of the policy file (for CI)
   log    shows the last refusals and approvals asked for (20 unless --last)
+  scan   looks for secrets in the files agents write and read here: their
+         settings (.claude/, .mcp.json, .codex/, .cursor/, .trae/, …) and
+         instruction files (CLAUDE.md, AGENTS.md, …), or the paths given.
+         It finds passwords written into command lines (PGPASSWORD=… psql,
+         sshpass -p …, curl -u me:…, --token …), keys kept in `env` and
+         `headers`, and credentials of a known format; it names the file,
+         the line and the kind, never the value, and says whether Git
+         tracks the file. It needs no policy file and sends nothing
   hook   the hook a client runs: reads its JSON on standard input
 
 Exit status:
-  0  done; for check, no rule refuses the call or asks; for test, every expectation holds
-  1  for check, the call is refused or needs a person; for test, one does not hold
+  0  done; for check, no rule refuses the call or asks; for test, every expectation holds;
+     for scan, no secret is found
+  1  for check, the call is refused or needs a person; for test, one does not hold;
+     for scan, a secret is found
   2  usage error
-  3  the policy file is missing or cannot be read, or a file cannot be written
+  3  the policy file is missing or cannot be read, a file cannot be written, or a path
+     given to scan does not exist
 ";
 
 /// What `memprove policy init` asks of the CLI: writing the hook of each
@@ -123,6 +136,7 @@ pub fn main(words: &[String], installer: Option<&dyn Installer>) -> u8 {
         "check" => check(rest),
         "test" => test(rest),
         "log" => show_log(rest),
+        "scan" => run_scan(rest),
         "hook" => run_hook(rest),
         other => usage_error(&format!("`{other}` is not a policy command")),
     }
@@ -440,6 +454,54 @@ fn show_log(words: &[String]) -> u8 {
             eprintln!("memprove: error: {error}");
             EXIT_ERROR
         }
+    }
+}
+
+fn run_scan(words: &[String]) -> u8 {
+    let mut as_json = false;
+    let mut targets = Vec::new();
+    let mut only_paths = false;
+    for word in words {
+        if only_paths || !word.starts_with('-') {
+            targets.push(PathBuf::from(word));
+        } else if word == "--" {
+            only_paths = true;
+        } else if word == "--json" {
+            as_json = true;
+        } else {
+            return usage_error(&format!("scan takes --json and paths, not `{word}`"));
+        }
+    }
+    let cwd = match current_dir() {
+        Ok(cwd) => cwd,
+        Err(code) => return code,
+    };
+    let root = engine::repository_root(&cwd);
+    let targets: Vec<PathBuf> = targets
+        .iter()
+        .map(|target| crate::commands::clean(&cwd.join(target)))
+        .collect();
+    let report = match scan::scan(&root, &targets) {
+        Ok(report) => report,
+        Err(error) => {
+            eprintln!("memprove: error: {error}");
+            return EXIT_ERROR;
+        }
+    };
+    if as_json {
+        print!("{}", report.json(&root));
+    } else {
+        println!("memprove policy scan: {}", root.display());
+        if report.files == 0 && report.skipped.is_empty() {
+            println!("no agent settings or instruction file found here");
+        } else {
+            print!("{}", report.text());
+        }
+    }
+    if report.findings.is_empty() {
+        EXIT_OK
+    } else {
+        EXIT_FAILED
     }
 }
 
