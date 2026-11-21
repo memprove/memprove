@@ -99,6 +99,22 @@ https://github.com/memprove/memprove/releases.
   and sends nothing. Checked on a generated corpus of made-up values
   (`crates/memprove-policy/tests/secrets_corpus.rs`); `docs/policy.md` has
   the numbers and what they do not show.
+- `memprove policy` rule tool `Secret(<kind>)`: `ask Secret(*)` or `deny
+  Secret(private-key)` decides a call that writes a secret out, by the
+  secret's kind (`password`, `private-key`, `jwt`, `github-token` and the
+  other formats; `*` every kind). The hook reads shell commands with the
+  same detectors as `policy scan`, and the text a call writes into a file
+  (Claude Code's `Write`, `Edit`, `MultiEdit`, `NotebookEdit`; the lines
+  Codex's `apply_patch` adds; Cursor's writes where its input carries
+  the text) for credentials of a known format, or in full when the file
+  is one of the agents' own settings and instruction files. The answer
+  names the secret (`password in PGPASSWORD: h…(7 characters)`) and never
+  holds it. The starter policy gets `ask Secret(*)` with two `expect`
+  lines; an existing policy file is not changed, and a policy without a
+  `Secret` rule behaves as before. The audit log now also redacts the
+  secrets the detectors find in a logged command (before, only runs of
+  32 or more token-like characters). `policy check` aligns its tool
+  column one character wider.
 - `memprove report` (crate `memprove-report`): one local report per
   Claude Code or Codex session of the repository, read from the client's
   transcript (`~/.claude/projects/`, `~/.codex/sessions/`): requests and

@@ -187,7 +187,9 @@ their own files: the password inside a command you allowed once
 in an MCP entry's `env`, the token quoted in `CLAUDE.md`. It names the
 file, the line and the kind, never the value, and says whether Git tracks
 the file. It runs locally, needs no policy file and exits 1 when it finds
-one, so it fits CI.
+one, so it fits CI. The rule `ask Secret(*)`, in the starter file, has a
+person approve a call that writes a new one: the agent is told to pass the
+secret through the environment instead.
 
 ## What a session cost, did and read
 

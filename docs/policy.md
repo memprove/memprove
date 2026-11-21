@@ -20,15 +20,17 @@ Commit `.memprove/policy.rules`. The hooks `init` writes go into each developer'
 ## Rules
 
 ```text
-# <deny|ask|allow> <Bash|Read|Edit|Mcp>(<pattern>)  [-- what the agent is told]
+# <deny|ask|allow> <Bash|Read|Edit|Mcp|Secret>(<pattern>)  [-- what the agent is told]
 allow Read(.env.example)
 deny  Read(.env*)                  -- secrets stay out of the agent's context
 deny  Bash(git push *--force*)     -- do not rewrite shared history; push a new branch
 ask   Bash(git push *)
 deny  Edit(db/migrations/**)       -- migrations are generated: run `make migration`
 deny  Mcp(github.merge_*)
+ask   Secret(*)                    -- keep secrets out of commands and files: use an environment variable
 expect deny Bash(cd app && git push origin main --force)
 expect ask  Bash(git push origin feature/x)
+expect ask  Bash(PGPASSWORD=hunter2 psql -h db.internal)
 ```
 
 - **The first rule that matches decides** a check. A command line is several checks (`cd app && git push -f` is two
@@ -47,6 +49,18 @@ expect ask  Bash(git push origin feature/x)
   checked where its symbolic links lead (a link to `.env` is `.env`).
 - **`Mcp(server.tool)`** matches an MCP tool (`github.merge_pull_request`, `github.merge_*`, or `github` for every tool
   of that server).
+- **`Secret(kind)`** is about a secret the agent writes out, whatever the command or the file: a password in a
+  command line (`PGPASSWORD=hunter2 psql`, `sshpass -p …`, `curl -u me:…`, `--token …`, read as described under
+  [Secrets in the agents' files](#secrets-in-the-agents-files)), or a credential in the text a call writes into a
+  file. The pattern matches the kind: `password`, `private-key`, `jwt`, `aws-access-key`, `github-token`,
+  `gitlab-token`, `anthropic-key`, `openai-key`, `slack-token`, `stripe-key`, `google-api-key`, `npm-token`,
+  `huggingface-token`, `sendgrid-key`, `digitalocean-token`, `pypi-token`; `*` is every kind, `*-token` every token.
+  `$PGPASSWORD`, `<placeholder>` and a file name are not secrets, so the way out the agent is told works: pass the
+  secret through the environment. Text written into a file is read for credentials of a known format, private keys
+  and passwords in URLs; the agents' own settings and instruction files (the ones `policy scan` reads) are read in
+  full, as the scan reads them. What an edit removes is not read. The answer and the log name the secret
+  (`password in PGPASSWORD: h…(7 characters)`) and never hold it. `memprove policy init`'s starter file has
+  `ask Secret(*)`; a policy without a `Secret` rule does not look for secrets.
 - **`expect`** lines are tests of the file itself: `memprove policy test` decides each one as the hook would and exits
   1 if one does not hold, so a change that breaks a rule fails CI. `expect allow` holds when nothing refuses or asks.
 
@@ -88,15 +102,17 @@ leaves the call to them, so a call is decided once.
 
 Each refusal and each approval asked for is appended to `<git common dir>/memprove-policy/log.jsonl` (mode 0600, one
 JSON object per line: time, client, tool, subject, decision, what the client was told, and the deciding rule). A
-subject is cut at 200 characters, and runs of 32 or more token-like characters are written as `[redacted]`. Calls
-nothing objects to are not logged. `memprove policy log --last 50` prints the last fifty.
+secret the detectors find in a subject is written redacted (`sshpass -p tr…(9 characters) ssh host`), runs of 32 or
+more token-like characters are written as `[redacted]`, and a subject is cut at 200 characters. Calls nothing objects
+to are not logged. `memprove policy log --last 50` prints the last fifty.
 
 ## Secrets in the agents' files
 
 Coding agents leave secrets in the files they write. An "always allow" click stores the whole command in
 `.claude/settings.local.json`, password and all; an MCP entry keeps an API key in its `env`; an instruction file
 quotes the command that worked. `memprove policy scan` reads those files and names each secret by file, line and
-kind. It needs no policy file and no hook.
+kind. It needs no policy file and no hook. A `Secret` rule keeps new ones from being written; the scan finds the
+ones that are already there.
 
 ```text
 $ memprove policy scan
@@ -122,7 +138,8 @@ next: revoke and reissue each one (every agent and tool that reads the file has 
   `docker login -p`, `smbclient -U me%…`, `openssl -passin pass:…`, `htpasswd -b`, and others), `Authorization` and
   other secret-named headers, `scheme://user:password@host`, `password=…` pairs in connection strings, and the
   scripts given to `bash -c`, `eval` and `ssh`. In JSON, a `command` with its `args` and a `Bash(…)` permission rule
-  are read this way; in other files, code blocks, code spans, quoted strings and shell scripts are.
+  are read this way; in other files, code blocks, code spans, quoted strings and shell scripts are. In
+  `.memprove/policy.rules` a `Bash(…)` rule is read this way too, and `expect` lines, which are tests, are skipped.
 - **Values of secret-named keys**: `"env": {"SERVICE_API_KEY": "…"}`, `"headers": {"Authorization": "Bearer …"}`,
   and `name = value` or `name: value` lines.
 - **Credentials of a known format**, wherever they stand: AWS access key IDs, GitHub, GitLab, Slack, npm, PyPI,
@@ -184,6 +201,10 @@ The corpus has not been run through other scanners (gitleaks, TruffleHog): NOT R
 - The hooks run only where they are installed and, for Codex and Cursor, trusted. `memprove policy init` on each
   developer's machine, and `memprove policy test` in CI, keep the two in step.
 - Shell commands are matched by their words; a rule on `git push *` does not see a push a script makes inside.
+- A `Secret` rule sees what the detectors see. A secret in a shape they do not read (see
+  [What the detectors were checked against](#what-the-detectors-were-checked-against)), one the agent splits or
+  encodes, one in an MCP tool's arguments, or one past the first 4 MiB of a written file is not seen; in source code
+  only credentials of a known format are. Cursor's file writes are read where its hook input carries the text.
 - `memprove policy scan` reads the files as they are now. It does not read Git history, the clients' saved
   sessions under your home directory, or source code unless you name the path, and it does not stop an agent from
   writing a secret: it tells you after.
