@@ -212,6 +212,34 @@ hook into `.claude/settings.local.json`) still finds the installation, but a tri
 with a memprove context, so the hook injects no Pack there and a command cannot record to a Session; the agent gets no
 Pack but the one `--memory pack` gives.
 
+### A local model
+
+Neither agent needs a change to run on a model served on the same machine: its own settings point it there, and they
+reach it through the variables above. With Ollama, which serves a model through an Anthropic-compatible and an
+OpenAI-compatible API on port 11434:
+
+```bash
+ollama pull qwen3-coder
+OLLAMA_CONTEXT_LENGTH=64000 ollama serve   # in another terminal: a coding agent needs a long context
+
+# Claude Code, through the Anthropic-compatible API
+ANTHROPIC_BASE_URL=http://localhost:11434 ANTHROPIC_AUTH_TOKEN=ollama \
+  memprove eval run evals/ --agent claude-code --model qwen3-coder
+
+# Codex, in its local-model mode
+memprove eval run evals/ --agent codex --model qwen3-coder --agent-arg --oss
+```
+
+- `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` are `ANTHROPIC_*` variables, so the agent inherits them without
+  `--pass-env`. Ollama ignores the token's value, but Claude Code needs one set.
+- `--model` is what tells a local run from a hosted one afterwards. `run.json`, `report` and `baseline.json` record the
+  agent's kind and model, and `run.json` keeps `--agent-arg --oss` in the agent's `extra_args`; no endpoint and no
+  variable's value is recorded. Name the model on every run, and compare a local run only with a baseline of the same
+  agent and model: the report's `Compared with baseline` line names both.
+- A cost the agent reports for a local model is not money spent; read such a run's pass rate and tokens.
+- A local model is not as strong as a hosted one, so its pass rate is a measure of that setup against itself. `eval ab`
+  with one model compares the Pack with no Pack under that model, which is what it is for.
+
 ## What the agent sees
 
 A trial's working copy is a new Git repository under the system's temporary directory with one commit on `main`, whose
