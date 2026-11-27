@@ -1302,7 +1302,7 @@ fn worse(left: Status, right: Status) -> Status {
 /// uses; WARN when it has no `--config-dir`. Whether Codex trusts the
 /// project and approved the hook in `/hooks`, or TRAE trusts the folder and
 /// enabled the hook, is the client's own state and is not checked; the line
-/// says so.
+/// says so. TRAE's `.trae/mcp.json` is checked too ([`trae_mcp_clause`]).
 #[allow(clippy::too_many_lines)] // One pass over every client's hooks file.
 fn client_hooks_check(root: &Path, config: Option<&Path>) -> Option<Check> {
     let mut status = Status::Pass;
@@ -1384,7 +1384,11 @@ fn client_hooks_check(root: &Path, config: Option<&Path>) -> Option<Check> {
             }
         }
     }
-    if detail.is_empty() {
+    let trae_mcp = match trae_mcp_clause(root) {
+        Ok(clause) => clause,
+        Err(line) => return Some(line),
+    };
+    if detail.is_empty() && trae_mcp.is_none() {
         return None;
     }
     if !dirs.is_empty() {
@@ -1392,6 +1396,13 @@ fn client_hooks_check(root: &Path, config: Option<&Path>) -> Option<Check> {
         let (dir_status, clause) = argument_against(&dirs, config, "the client's hook");
         status = worse(status, dir_status);
         write!(detail, "; {clause}").expect("writing to a String cannot fail");
+    }
+    if let Some((mcp_status, clause)) = &trae_mcp {
+        status = worse(status, *mcp_status);
+        if !detail.is_empty() {
+            detail.push_str("; ");
+        }
+        detail.push_str(clause);
     }
     if codex {
         detail.push_str(
@@ -1405,7 +1416,66 @@ fn client_hooks_check(root: &Path, config: Option<&Path>) -> Option<Check> {
              Hooks (not checked here)",
         );
     }
+    if trae_mcp.is_some() {
+        detail.push_str(
+            "; TRAE starts the server only once Enable Project MCP and the memprove server are \
+             both switched on in Settings > MCP (not checked here)",
+        );
+    }
     Some(check("client-hooks", status, detail))
+}
+
+/// TRAE's `.trae/mcp.json` (`memprove init --client trae` writes it): TRAE
+/// starts a project's MCP servers in the user's home directory and sets no
+/// `CLAUDE_PROJECT_DIR`, so its `mcpServers.memprove` must carry the
+/// Workspace root in `env.CLAUDE_PROJECT_DIR`, else the server resolves no
+/// Workspace: PASS when it is `root`, WARN when it is missing (0.3.0 wrote
+/// none), FAIL when it names another directory. `None` when there is no
+/// such file or entry; `Err` the line when the file cannot be read.
+fn trae_mcp_clause(root: &Path) -> Result<Option<(Status, String)>, Check> {
+    let path = root.join(crate::init::TRAE_MCP_FILE);
+    let Some(value) = read_json(&path, "client-hooks")? else {
+        return Ok(None);
+    };
+    let Some(entry) = value
+        .get("mcpServers")
+        .and_then(|servers| servers.get("memprove"))
+    else {
+        return Ok(None);
+    };
+    let variable = crate::mcp::PROJECT_DIR_ENV;
+    let project_dir = entry
+        .get("env")
+        .and_then(|env| env.get(variable))
+        .and_then(JsonValue::as_str);
+    Ok(Some(match project_dir {
+        Some(dir) if same_dir(Path::new(dir), root) => (
+            Status::Pass,
+            format!(
+                "{} gives the memprove MCP server the Workspace root as {variable}",
+                path.display()
+            ),
+        ),
+        Some(dir) => (
+            Status::Fail,
+            format!(
+                "{} gives the memprove MCP server {variable}={dir}, not the Workspace root {}, \
+                 so its tools would use another Workspace (`memprove init --client trae` writes \
+                 it again)",
+                path.display(),
+                root.display()
+            ),
+        ),
+        None => (
+            Status::Warn,
+            format!(
+                "{} gives the memprove MCP server no {variable}; TRAE starts it in your home \
+                 directory, so its tools find no Workspace (`memprove init --client trae` \
+                 writes it)",
+                path.display()
+            ),
+        ),
+    }))
 }
 
 /// U5 P3 (Owner O5): the `mcp-entry` line; U5 Z-F round 1 (S1, the
@@ -1856,6 +1926,55 @@ mod tests {
             foreign.detail.contains("memprove init --client trae"),
             "{}",
             foreign.detail
+        );
+
+        // .trae/mcp.json: the Workspace root as CLAUDE_PROJECT_DIR passes,
+        // none (as 0.3.0 wrote it) warns, another directory fails.
+        crate::hook::install_trae_hooks(&trae_file, exe, dir).unwrap();
+        let mcp_file = root.join(crate::init::TRAE_MCP_FILE);
+        let root_text = root.to_str().unwrap();
+        crate::hook::install_trae_mcp_json(&mcp_file, exe, dir, root_text).unwrap();
+        let served = client_hooks_check(&root, Some(&config)).unwrap();
+        assert_eq!(served.status, Status::Pass, "{}", served.detail);
+        assert!(
+            served
+                .detail
+                .contains("the Workspace root as CLAUDE_PROJECT_DIR"),
+            "{}",
+            served.detail
+        );
+        assert!(
+            served.detail.contains("Settings > MCP (not checked here)"),
+            "{}",
+            served.detail
+        );
+        crate::hook::install_mcp_json(&mcp_file, exe, dir).unwrap();
+        let unset = client_hooks_check(&root, Some(&config)).unwrap();
+        assert_eq!(unset.status, Status::Warn, "{}", unset.detail);
+        assert!(
+            unset
+                .detail
+                .contains("no CLAUDE_PROJECT_DIR; TRAE starts it in your home"),
+            "{}",
+            unset.detail
+        );
+        crate::hook::install_trae_mcp_json(&mcp_file, exe, dir, other.to_str().unwrap()).unwrap();
+        let elsewhere = client_hooks_check(&root, Some(&config)).unwrap();
+        assert_eq!(elsewhere.status, Status::Fail, "{}", elsewhere.detail);
+        // The MCP file alone still gets the line.
+        std::fs::remove_file(&trae_file).unwrap();
+        crate::hook::install_trae_mcp_json(&mcp_file, exe, dir, root_text).unwrap();
+        let alone = client_hooks_check(&root, Some(&config)).unwrap();
+        assert_eq!(alone.status, Status::Pass, "{}", alone.detail);
+        assert!(
+            !alone.detail.contains("Settings > Hooks"),
+            "{}",
+            alone.detail
+        );
+        std::fs::write(&mcp_file, "{").unwrap();
+        assert_eq!(
+            client_hooks_check(&root, Some(&config)).unwrap().status,
+            Status::Fail
         );
     }
 

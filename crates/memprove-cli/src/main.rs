@@ -955,11 +955,17 @@ impl InitPlan {
     }
 
     /// Step 6: TRAE and TRAE CN: the hook in .trae/hooks.json, the server
-    /// in .trae/mcp.json, the note as the rule .trae/rules/memprove.md.
+    /// in .trae/mcp.json (with the Workspace root as `CLAUDE_PROJECT_DIR`:
+    /// TRAE starts it in the user's home), the note as the rule
+    /// .trae/rules/memprove.md.
     fn trae(&self) -> Result<Vec<memprove_cli::init::Step>, String> {
         use memprove_cli::init::{self, Step};
         let hooks_file = self.root.join(hook::TRAE_HOOKS_FILE);
         let mcp_json = self.root.join(init::TRAE_MCP_FILE);
+        let root_text = self
+            .root
+            .to_str()
+            .ok_or_else(|| format!("{} is not valid UTF-8", self.root.display()))?;
         let (hooks, server) = if self.dry_run {
             (Step::WouldWrite(hooks_file), Step::WouldWrite(mcp_json))
         } else {
@@ -969,10 +975,11 @@ impl InitPlan {
                     &self.executable,
                     &self.config_text,
                 )?),
-                step_of(hook::install_mcp_json(
+                step_of(hook::install_trae_mcp_json(
                     &mcp_json,
                     &self.executable,
                     &self.config_text,
+                    root_text,
                 )?),
             )
         };

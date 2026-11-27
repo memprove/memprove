@@ -1965,6 +1965,15 @@ pub fn config_fragment(executable: &str, config_dir: &str) -> String {
 /// server `executable mcp serve` with `env.MEMPROVE_CONFIG_DIR` set to
 /// `config_dir`.
 fn server_entry(executable: &str, config_dir: &str) -> JsonValue {
+    server_entry_in(executable, config_dir, None)
+}
+
+/// [`server_entry`], and with `project_dir` also
+/// `env.CLAUDE_PROJECT_DIR` ([`crate::mcp::PROJECT_DIR_ENV`]) set to it:
+/// the Workspace root, for a client that starts the server in another
+/// directory and does not set the variable itself (TRAE starts it in the
+/// user's home).
+fn server_entry_in(executable: &str, config_dir: &str, project_dir: Option<&str>) -> JsonValue {
     let text = |value: &str| JsonValue::String(value.to_owned());
     JsonValue::Object(vec![
         ("type".to_owned(), text("stdio")),
@@ -1980,8 +1989,24 @@ fn server_entry(executable: &str, config_dir: &str) -> JsonValue {
                     .collect(),
             ),
         ),
-        ("env".to_owned(), config_env(config_dir)),
+        ("env".to_owned(), server_env(config_dir, project_dir)),
     ])
+}
+
+/// [`config_env`], and `CLAUDE_PROJECT_DIR` set to `project_dir` when
+/// there is one.
+fn server_env(config_dir: &str, project_dir: Option<&str>) -> JsonValue {
+    let mut env = vec![(
+        CONFIG_DIR_VARIABLE.to_owned(),
+        JsonValue::String(config_dir.to_owned()),
+    )];
+    if let Some(project_dir) = project_dir {
+        env.push((
+            crate::mcp::PROJECT_DIR_ENV.to_owned(),
+            JsonValue::String(project_dir.to_owned()),
+        ));
+    }
+    JsonValue::Object(env)
 }
 
 /// `{"MEMPROVE_CONFIG_DIR": config_dir}`.
@@ -2217,6 +2242,17 @@ fn with_server(
     executable: &str,
     config_dir: &str,
 ) -> Result<JsonValue, String> {
+    with_server_in(mcp_json, executable, config_dir, None)
+}
+
+/// [`with_server`], with the entry of [`server_entry_in`]: with
+/// `project_dir`, its `env.CLAUDE_PROJECT_DIR` too.
+fn with_server_in(
+    mcp_json: &JsonValue,
+    executable: &str,
+    config_dir: &str,
+    project_dir: Option<&str>,
+) -> Result<JsonValue, String> {
     let JsonValue::Object(members) = mcp_json else {
         return Err("its top level is not a JSON object".to_owned());
     };
@@ -2226,7 +2262,7 @@ fn with_server(
     set(
         &mut servers,
         "memprove",
-        server_entry(executable, config_dir),
+        server_entry_in(executable, config_dir, project_dir),
     );
     set(&mut members, "mcpServers", JsonValue::Object(servers));
     Ok(JsonValue::Object(members))
@@ -2508,6 +2544,28 @@ pub fn install_mcp_json(
 ) -> Result<Change, String> {
     Edit::of(mcp_json, |original| {
         with_server(original, executable, config_dir)
+    })?
+    .apply(true)
+}
+
+/// TRAE's `.trae/mcp.json`: [`install_mcp_json`], with
+/// `env.CLAUDE_PROJECT_DIR` set to `workspace_root` in the entry. TRAE
+/// starts a project's MCP servers in the user's home directory, not the
+/// project, and does not set the variable, so without it `mcp serve`
+/// resolves no Workspace (seen in TRAE 3.6.24, 2026-11-27). Run again on an
+/// entry without it, this writes it.
+///
+/// # Errors
+///
+/// As [`install`].
+pub fn install_trae_mcp_json(
+    mcp_json: &Path,
+    executable: &str,
+    config_dir: &str,
+    workspace_root: &str,
+) -> Result<Change, String> {
+    Edit::of(mcp_json, |original| {
+        with_server_in(original, executable, config_dir, Some(workspace_root))
     })?
     .apply(true)
 }
@@ -4478,6 +4536,30 @@ mod tests {
             ["continuity", "memprove"]
         );
         assert_eq!(without_server(&other).unwrap(), other);
+        // TRAE's entry carries the Workspace root as CLAUDE_PROJECT_DIR; one
+        // written without it (0.3.0) is replaced, and it stays the server
+        // `install` takes as its own.
+        let trae = with_server_in(&mcp_json, "/t/bin/memprove", "/t/c", Some("/t/repo")).unwrap();
+        let entry = trae.get("mcpServers").unwrap().get("memprove").unwrap();
+        assert_eq!(
+            entry.get("env").unwrap(),
+            &parse_strict(r#"{"MEMPROVE_CONFIG_DIR":"/t/c","CLAUDE_PROJECT_DIR":"/t/repo"}"#)
+                .unwrap()
+        );
+        assert!(is_own_server(entry));
+        assert_eq!(
+            with_server_in(&written, "/t/bin/memprove", "/t/c", Some("/t/repo")).unwrap(),
+            trae
+        );
+        assert_eq!(names(&without_server(&trae).unwrap()), ["x"]);
+        assert!(
+            server_entry("/t/bin/memprove", "/t/c")
+                .get("env")
+                .unwrap()
+                .get(crate::mcp::PROJECT_DIR_ENV)
+                .is_none(),
+            "Claude Code and Cursor entries do not get it"
+        );
         let settings = parse_strict(
             r#"{"env":{"CONTINUITY_CONFIG_DIR":"/t/c","A":"1"},"permissions":{"allow":["mcp__continuity","B"]}}"#,
         )

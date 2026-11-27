@@ -3,6 +3,24 @@
 Each release, with its binaries, is on
 https://github.com/memprove/memprove/releases.
 
+## Unreleased
+
+### Fixed
+
+- `memprove init --client trae` now writes the Workspace root into
+  `env.CLAUDE_PROJECT_DIR` of `mcpServers.memprove` in `.trae/mcp.json`.
+  TRAE starts a project's MCP servers in the user's home directory and
+  sets no `CLAUDE_PROJECT_DIR`, so the server 0.3.0 wrote resolved no
+  Workspace there and every tool (`pack` first) failed; found in TRAE
+  3.6.24 on 2026-11-27. Run `init --client trae` again to rewrite an
+  existing entry. doctor's `client-hooks` line checks the variable: WARN
+  when it is missing, FAIL when it names another directory.
+- The TRAE note, the help and the guide now say what TRAE 3.6.24 showed:
+  in its default sandbox the hook injects the Pack but cannot record the
+  client session, the memprove server must be switched on by itself after
+  Enable Project MCP, and with the import of Claude Code hooks on TRAE runs
+  that hook without its arguments (exit 2, harmless).
+
 ## 0.3.0 · 2026-11-21
 
 Adds four commands and two more clients: `memprove verify` checks that

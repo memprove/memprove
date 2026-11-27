@@ -1245,7 +1245,9 @@ pub const MAINTENANCE_COMMANDS: &[CommandHelp] = &[
                 as one shell command line into .trae/hooks.json (TRAE runs it once you trust\n\
                 the folder and enable the hook in Settings > Hooks; keep TRAE's import of\n\
                 Claude Code hooks off, or it runs the Claude Code hook as well),\n\
-                mcpServers.memprove into .trae/mcp.json (read once project MCP is on), and the\n\
+                mcpServers.memprove into .trae/mcp.json (started once project MCP and the\n\
+                server are on; its env.CLAUDE_PROJECT_DIR is the Workspace root, since TRAE\n\
+                starts it in your home directory), and the\n\
                 same note as an always-applied rule in .trae/rules/memprove.md; then runs\n\
                 doctor and prints its report. Every\n\
                 file it edits keeps its other content; run again, it changes nothing. What init\n\
@@ -1297,13 +1299,15 @@ pub const MAINTENANCE_COMMANDS: &[CommandHelp] = &[
                 --config-dir argument, else env.MEMPROVE_CONFIG_DIR: WARN when there is no entry\n\
                 or it has neither, FAIL when another; one in .claude/settings.local.json or\n\
                 .claude/settings.json counts for nothing (Claude Code does not read it), and the\n\
-                line says so); client-hooks (only when .codex/hooks.json, .cursor/hooks.json or\n\
-                .trae/hooks.json exists: each runs `<path> hook session-start` as `memprove init`\n\
-                writes it, <path> exists, Cursor's has --client cursor, and its --config-dir is\n\
-                the configuration directory doctor uses: WARN when a file has no such handler or\n\
-                it has no --config-dir, FAIL when another; whether Codex trusts the project and\n\
-                approved the hook in /hooks, or TRAE trusts the folder and enabled the hook, is\n\
-                not checked); ledger (verifyLedger of the\n\
+                line says so); client-hooks (only when .codex/hooks.json, .cursor/hooks.json,\n\
+                .trae/hooks.json or .trae/mcp.json exists: each runs `<path> hook session-start`\n\
+                as `memprove init` writes it, <path> exists, Cursor's has --client cursor, and its\n\
+                --config-dir is the configuration directory doctor uses: WARN when a file has no\n\
+                such handler or it has no --config-dir, FAIL when another; the memprove server of\n\
+                .trae/mcp.json has the Workspace root as env.CLAUDE_PROJECT_DIR: WARN when it has\n\
+                none, FAIL when another directory; whether Codex trusts the project and approved\n\
+                the hook in /hooks, or TRAE trusts the folder and enabled the hook and the server,\n\
+                is not checked); ledger (verifyLedger of the\n\
                 context's Project: counts and chain head, or the first record that does not\n\
                 hold). A check that cannot be made (no daemon, no token) is a WARN that says why.\n\
                 Each line is `<STATUS> <check>: <detail>`, and the last line counts them; --json\n\
