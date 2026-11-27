@@ -209,11 +209,12 @@ pub const TRAE_RULE_FILE: &str = ".trae/rules/memprove.md";
 pub const TRAE_TRUST_NOTE: &str = "TRAE runs this hook only after you allow it: open this \
                                    repository in TRAE (or TRAE CN), trust the folder, enable the \
                                    memprove hook in Settings > Hooks with local runs (in the \
-                                   sandbox it may not reach memprove), turn on project MCP in \
-                                   Settings > MCP, and keep the import of Claude Code hooks off, \
-                                   or TRAE runs memprove's Claude Code hook as well; until then \
-                                   the rule in .trae/rules tells the agent to read the Pack \
-                                   through the MCP tool pack";
+                                   sandbox it injects the Pack but cannot record the client \
+                                   session), turn on Enable Project MCP and then the memprove \
+                                   server in Settings > MCP, and keep the import of Claude Code \
+                                   hooks off, or TRAE runs memprove's Claude Code hook as well; \
+                                   until then the rule in .trae/rules tells the agent to read the \
+                                   Pack through the MCP tool pack";
 
 /// The note for an agent whose session started without a Pack (AGENTS.md
 /// for Codex, a Cursor rule; U24: a hook Codex has not been allowed to run,

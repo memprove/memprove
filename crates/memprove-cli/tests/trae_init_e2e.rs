@@ -4,10 +4,14 @@
 //! `.trae/rules/memprove.md`, keeps them out of Evidence, and says what the
 //! user still turns on in TRAE; run again it changes nothing. The hook it
 //! wrote, run as TRAE runs it (`sh -c`, from the project root) with TRAE's
-//! `SessionStart` input (Claude Code's members, a UUID `session_id`, and
+//! `SessionStart` input (Claude Code's members, a `session_id`, and
 //! `workspace_roots`), prints the same Pack the Claude Code hook prints,
-//! as plain text, which TRAE adds to the model's context. Detection takes
-//! TRAE from `~/.trae-cn` or `~/.trae`.
+//! as plain text, which TRAE adds to the model's context; the 24
+//! hexadecimal digits TRAE 3.6.24 sends as `session_id` (with `agent_id`
+//! and `agent_type`) are taken as a UUID is. The MCP entry carries the
+//! Workspace root as `CLAUDE_PROJECT_DIR`, since TRAE starts the server in
+//! the user's home; an entry 0.3.0 wrote without it is rewritten. Detection
+//! takes TRAE from `~/.trae-cn` or `~/.trae`.
 
 #[path = "u6_ui_support/mod.rs"]
 mod support;
@@ -191,6 +195,20 @@ fn trae_init_writes_the_trae_files_and_its_hook_injects_the_pack() {
             fixture.config.display().to_string()
         ])
     );
+    // TRAE starts the server in the user's home: the entry names the
+    // Workspace root, the directory `init` resolved (the canonical one).
+    let root = fs::canonicalize(repo).unwrap();
+    let env = server.get("env").unwrap();
+    assert_eq!(
+        env.get("CLAUDE_PROJECT_DIR").and_then(JsonValue::as_str),
+        root.to_str(),
+        "{server:?}"
+    );
+    assert_eq!(
+        env.get("MEMPROVE_CONFIG_DIR").and_then(JsonValue::as_str),
+        fixture.config.to_str(),
+        "{server:?}"
+    );
     let rule = read(&repo.join(".trae/rules/memprove.md"));
     assert!(rule.starts_with("---\nalwaysApply: true\n---\n"), "{rule}");
     assert!(rule.contains("call the MCP tool `pack`"), "{rule}");
@@ -201,6 +219,10 @@ fn trae_init_writes_the_trae_files_and_its_hook_injects_the_pack() {
     assert!(client_hooks.contains("PASS"), "{client_hooks}");
     assert!(
         client_hooks.contains("Settings > Hooks (not checked here)"),
+        "{client_hooks}"
+    );
+    assert!(
+        client_hooks.contains("the Workspace root as CLAUDE_PROJECT_DIR"),
         "{client_hooks}"
     );
     assert!(!client_hooks.contains("/hooks (not"), "{client_hooks}");
@@ -221,6 +243,42 @@ fn trae_init_writes_the_trae_files_and_its_hook_injects_the_pack() {
         );
     }
     assert!(!second_out.contains("note: TRAE"), "{second_out}");
+
+    // An entry as 0.3.0 wrote it (no CLAUDE_PROJECT_DIR): init writes the
+    // variable in, and doctor's line passes again.
+    let mcp_file = repo.join(".trae/mcp.json");
+    let current = read(&mcp_file);
+    let project_line = current
+        .lines()
+        .find(|line| line.contains("\"CLAUDE_PROJECT_DIR\""))
+        .unwrap_or_else(|| panic!("{current}"));
+    let old = current.replace(&format!("{project_line}\n"), "").replace(
+        &format!("\"MEMPROVE_CONFIG_DIR\": \"{}\",", fixture.config.display()),
+        &format!("\"MEMPROVE_CONFIG_DIR\": \"{}\"", fixture.config.display()),
+    );
+    let old_value = parse_strict(&old).unwrap_or_else(|error| panic!("{error}: {old}"));
+    assert!(
+        old_value
+            .get("mcpServers")
+            .and_then(|servers| servers.get("memprove"))
+            .and_then(|server| server.get("env"))
+            .and_then(|env| env.get("CLAUDE_PROJECT_DIR"))
+            .is_none(),
+        "{old}"
+    );
+    fs::write(&mcp_file, &old).unwrap();
+    let upgrade = init(&fixture, &home, &["--client", "trae"]);
+    let upgrade_out = text(&upgrade.stdout);
+    let upgraded = upgrade_out
+        .lines()
+        .find(|line| line.contains("client-hooks"))
+        .unwrap_or_else(|| panic!("{upgrade_out}"));
+    assert!(upgraded.contains("PASS"), "{upgraded}");
+    assert!(
+        upgrade_out.contains(&format!("{} written", mcp_file.display())),
+        "{upgrade_out}"
+    );
+    assert_eq!(read(&mcp_file), current);
 
     // The hook as TRAE runs it, with TRAE's input: the Claude Code Pack.
     let mut claude = isolated(cli_binary());
@@ -261,6 +319,33 @@ fn trae_init_writes_the_trae_files_and_its_hook_injects_the_pack() {
     assert_eq!(
         read(&env_file),
         "export MEMPROVE_CLIENT_SESSION='6f1c2a9e-1b2d-4c3e-9f00-1234567890ab'\n"
+    );
+
+    // TRAE 3.6.24's own input: a 24-digit hexadecimal session_id, with
+    // agent_id and agent_type.
+    let trae_env_file = fixture.root.join("trae-env-24");
+    let mut trae_24 = isolated("/bin/sh");
+    trae_24
+        .arg("-c")
+        .arg(&command)
+        .env("TRAE_PROJECT_DIR", repo)
+        .env("CLAUDE_PROJECT_DIR", repo)
+        .env("TRAE_ENV_FILE", &trae_env_file)
+        .env("CLAUDE_ENV_FILE", &trae_env_file);
+    let trae_24 = feed(
+        &fixture,
+        trae_24,
+        &format!(
+            r#"{{"session_id":"6b092633d774da35b17f515a","agent_id":"a1","agent_type":"solo_agent","cwd":"{0}","hook_event_name":"SessionStart","workspace_roots":["{0}"],"source":"startup"}}"#,
+            repo.display()
+        ),
+    );
+    let (trae_24_opening, trae_24_pack) = pack_of(&trae_24);
+    assert_eq!(trae_24_pack, claude_pack);
+    assert_eq!(trae_24_opening, claude_opening);
+    assert_eq!(
+        read(&trae_env_file),
+        "export MEMPROVE_CLIENT_SESSION='6b092633d774da35b17f515a'\n"
     );
     fixture.stop();
 }

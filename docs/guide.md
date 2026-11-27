@@ -469,11 +469,19 @@ handler prints nothing for an input that names `cursor_version`, so the Pack is 
 one shell command line: TRAE documents only `type`, `command` and `timeout` for a handler, not Claude Code's `args`.
 TRAE sends Claude Code's members (`session_id`, `cwd`, `hook_event_name`, `source` `startup`) and `workspace_roots`,
 reads plain standard output as context, and sets `TRAE_ENV_FILE` and `CLAUDE_ENV_FILE`, so the opening and the Pack
-are Claude Code's and the client session is exported as it is there. TRAE runs a project's hooks only in a folder you
-trust, once the hook is enabled in Settings > Hooks, and reads `.trae/mcp.json` only with project MCP turned on;
-`init` says so and turns nothing on. A hook TRAE runs in its sandbox has restricted file access and may not reach the
-configuration directory or the daemon's socket, so let it run locally. With its import of Claude Code hooks on, TRAE
-also runs the handler of `.claude/settings.local.json`; keep that import off in a repository where `init` wrote both.
+are Claude Code's and the client session is exported as it is there (TRAE's `session_id` is 24 hexadecimal digits,
+not a UUID, and its input adds `agent_id` and `agent_type`; the hook takes them as they are). TRAE runs a project's
+hooks only in a folder you trust, once the hook is enabled in Settings > Hooks, and starts the server of
+`.trae/mcp.json` only once Enable Project MCP and then the memprove server itself are switched on in Settings > MCP;
+`init` says so and turns nothing on. TRAE starts that server in your home directory, not in the project, and sets no
+`CLAUDE_PROJECT_DIR`, so `init` writes the Workspace root into the entry's `env.CLAUDE_PROJECT_DIR` (the file is in
+`.git/info/exclude`, so the absolute path stays on your machine), and doctor's `client-hooks` line checks it: WARN
+when it is missing, as in a file 0.3.0 wrote (run `init --client trae` again), FAIL when it names another directory.
+In TRAE's sandbox, its default, the hook still injects the Pack, but it cannot write the two records it keeps in the
+configuration directory, the client session `mcp serve` reads and the Pack `begin` records, so let it run locally.
+With its import of Claude Code hooks on, TRAE also runs the handler of `.claude/settings.local.json`, without its
+`args`, so it runs a bare `memprove` that exits 2 (TRAE carries on, and the Pack is injected once); keep that import
+off in a repository where `init` wrote both.
 
 **The hook's time limit.** The hook gives itself 8 seconds to read the Pack, within the handler's own `timeout` of 10
 seconds that `hook install` writes, so that Claude Code never cuts it off first. When the daemon has not answered by
@@ -703,9 +711,10 @@ lines, and `memprove policy init` writes a starter file and the hooks. `docs/pol
 - The Codex and Cursor hooks are written but not run by `init`: Codex runs one only after you trust the project and
   approve the hook in `/hooks`, and Cursor's Agents Window drops a `sessionStart` hook's context (Cursor's bug; its
   editor panel and its CLI take it). The note in `AGENTS.md` and the Cursor rule cover both cases.
-- The TRAE hook is written but not run by `init`, and it has not yet been run in TRAE itself: the files follow
-  TRAE's documentation, and the hook was checked with TRAE's documented `SessionStart` input only. The TRAE rule
-  covers a session whose hook did not run.
+- The TRAE hook is written but not run by `init`. It was run in TRAE 3.6.24 (international edition, macOS) on
+  2026-11-27: the hook injected the Pack in the sandbox and locally, and the MCP tools resolved the Workspace once the
+  entry had `env.CLAUDE_PROJECT_DIR`. TRAE CN, Windows, and a whole session of the MCP write tools in TRAE were not
+  run. The TRAE rule covers a session whose hook did not run.
 - `memprove eval` gives the agent a Pack only with `--memory pack` (or in the second run of `eval ab`): a trial
   worktree has no memprove context of its own, and the agent's `MEMPROVE_CONFIG_DIR` is an empty directory. The
   Pack is read once when the run starts and is given as text ahead of the prompt, not through the agent's own hook.
