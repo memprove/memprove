@@ -583,7 +583,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "memprove-cli"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "memprove-domain",
  "memprove-eval",
@@ -598,7 +598,7 @@ dependencies = [
 
 [[package]]
 name = "memprove-daemon"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "axum",
  "getrandom",
@@ -615,7 +615,7 @@ dependencies = [
 
 [[package]]
 name = "memprove-domain"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "chrono",
  "serde",
@@ -628,14 +628,14 @@ dependencies = [
 
 [[package]]
 name = "memprove-engine"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "memprove-domain",
 ]
 
 [[package]]
 name = "memprove-eval"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "memprove-protocol",
  "sha2",
@@ -644,7 +644,7 @@ dependencies = [
 
 [[package]]
 name = "memprove-policy"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "memprove-protocol",
  "tempfile",
@@ -652,18 +652,18 @@ dependencies = [
 
 [[package]]
 name = "memprove-protocol"
-version = "0.3.0"
+version = "0.3.1"
 
 [[package]]
 name = "memprove-proxy"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "memprove-protocol",
 ]
 
 [[package]]
 name = "memprove-repo"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "memprove-domain",
  "memprove-engine",
@@ -674,7 +674,7 @@ dependencies = [
 
 [[package]]
 name = "memprove-report"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "memprove-policy",
  "memprove-protocol",
@@ -683,7 +683,7 @@ dependencies = [
 
 [[package]]
 name = "memprove-store-sqlite"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "cap-std",
  "chrono",
@@ -701,7 +701,7 @@ dependencies = [
 
 [[package]]
 name = "memprove-verify"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "memprove-eval",
  "sha2",

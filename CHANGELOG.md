@@ -3,7 +3,12 @@
 Each release, with its binaries, is on
 https://github.com/memprove/memprove/releases.
 
-## Unreleased
+## 0.3.1 · 2026-11-27
+
+Fixes TRAE's MCP server, found in the first run in TRAE itself (TRAE
+3.6.24 on macOS): `memprove init --client trae` now gives it the
+Workspace root, and the TRAE note, help and guide say what that run
+showed.
 
 ### Fixed
 
